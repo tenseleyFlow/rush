@@ -4,9 +4,6 @@
 *.pdb
 Cargo.lock
 
-# Documentation (generated)
-docs/
-
 # IDE
 .idea/
 .vscode/
@@ -17,3 +14,4 @@ docs/
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
