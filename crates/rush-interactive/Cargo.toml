@@ -1,0 +1,13 @@
+[package]
+name = "rush-interactive"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rush-parser = { path = "../rush-parser" }
+reedline = { workspace = true }
+nu-ansi-term = { workspace = true }
+crossterm = { workspace = true }

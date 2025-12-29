@@ -1,0 +1,25 @@
+[package]
+name = "rush-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rush"
+path = "src/main.rs"
+
+[dependencies]
+rush-parser = { path = "../rush-parser" }
+rush-expand = { path = "../rush-expand" }
+rush-executor = { path = "../rush-executor" }
+rush-job = { path = "../rush-job" }
+rush-eval = { path = "../rush-eval" }
+rush-interactive = { path = "../rush-interactive" }
+
+reedline = { workspace = true }
+crossterm = { workspace = true }
+nu-ansi-term = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

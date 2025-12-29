@@ -1,0 +1,13 @@
+[package]
+name = "rush-executor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rush-parser = { path = "../rush-parser" }
+nix = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
