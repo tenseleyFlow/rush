@@ -1,0 +1,24 @@
+// Rush shell grammar (Phase 1 - Simple commands only)
+
+WHITESPACE = _{ " " | "\t" }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+
+// Top-level input
+input = { SOI ~ command_line ~ EOI }
+command_line = { simple_command? }
+
+// Simple command: command name followed by arguments
+simple_command = { word ~ word* }
+
+// Word: either a bare word or a quoted string
+word = { quoted_string | bare_word }
+
+// Bare word: any non-whitespace, non-special characters
+bare_word = @{ (!(WHITESPACE | NEWLINE | "#" | "\"" | "'") ~ ANY)+ }
+
+// Quoted strings
+quoted_string = { double_quoted | single_quoted }
+double_quoted = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+
+NEWLINE = _{ "\n" | "\r\n" }
