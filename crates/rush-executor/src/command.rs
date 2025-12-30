@@ -75,7 +75,7 @@ pub fn execute_command(
 }
 
 /// Execute built-in commands
-fn execute_builtin(command: &str, args: &[String]) -> Option<ExecutionResult> {
+pub(crate) fn execute_builtin(command: &str, args: &[String]) -> Option<ExecutionResult> {
     match command {
         "exit" => {
             let code = args.first()
@@ -108,7 +108,7 @@ fn execute_builtin(command: &str, args: &[String]) -> Option<ExecutionResult> {
 }
 
 #[cfg(unix)]
-fn success_result() -> ExecutionResult {
+pub(crate) fn success_result() -> ExecutionResult {
     ExecutionResult {
         exit_status: std::process::ExitStatus::from_raw(0),
     }
@@ -122,7 +122,7 @@ fn error_result() -> ExecutionResult {
 }
 
 #[cfg(not(unix))]
-fn success_result() -> ExecutionResult {
+pub(crate) fn success_result() -> ExecutionResult {
     ExecutionResult {
         exit_status: std::process::ExitStatus::default(),
     }
@@ -138,7 +138,7 @@ fn error_result() -> ExecutionResult {
 }
 
 /// Find a command in PATH
-fn find_in_path(command: &str) -> Option<PathBuf> {
+pub(crate) fn find_in_path(command: &str) -> Option<PathBuf> {
     // If the command contains a slash, treat it as a path
     if command.contains('/') {
         let path = PathBuf::from(command);

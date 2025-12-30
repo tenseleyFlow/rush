@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rush-parser = { path = "../rush-parser" }
+rush-expand = { path = "../rush-expand" }
 nix = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
