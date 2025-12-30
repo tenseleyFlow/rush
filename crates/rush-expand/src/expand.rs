@@ -1,11 +1,12 @@
+use crate::command_subst::{execute_command_substitution, CommandSubstError};
 use crate::context::Context;
 use rush_parser::{VarExpansion, Word, WordPart};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ExpansionError {
-    #[error("Command substitution not yet implemented: {0}")]
-    CommandSubstitutionNotImplemented(String),
+    #[error("Command substitution failed: {0}")]
+    CommandSubstitutionFailed(#[from] CommandSubstError),
 
     #[error("Expansion error: {0}")]
     Other(String),
@@ -25,10 +26,8 @@ pub fn expand_word(word: &Word, context: &Context) -> Result<String, ExpansionEr
                 result.push_str(&expanded);
             }
             WordPart::CommandSubstitution(cmd) => {
-                // Will implement this next
-                return Err(ExpansionError::CommandSubstitutionNotImplemented(
-                    cmd.clone(),
-                ));
+                let output = execute_command_substitution(cmd)?;
+                result.push_str(&output);
             }
         }
     }
@@ -139,5 +138,26 @@ mod tests {
 
         let result = expand_words(&words, &ctx).unwrap();
         assert_eq!(result, vec!["ls", "-la"]);
+    }
+
+    #[test]
+    fn test_expand_command_substitution() {
+        let ctx = Context::empty();
+        let word = Word::new(vec![WordPart::CommandSubstitution("echo hello".to_string())]);
+
+        let result = expand_word(&word, &ctx).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_expand_mixed_with_command_subst() {
+        let ctx = Context::empty();
+        let word = Word::new(vec![
+            WordPart::Literal("Result: ".to_string()),
+            WordPart::CommandSubstitution("echo success".to_string()),
+        ]);
+
+        let result = expand_word(&word, &ctx).unwrap();
+        assert_eq!(result, "Result: success");
     }
 }
