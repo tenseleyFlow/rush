@@ -108,8 +108,7 @@ fn execute_stdin() -> ExitCode {
 
 /// Execute a single line of shell input
 fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<i32, String> {
-    use rush_executor::execute_command;
-    use rush_expand::expand_words;
+    use rush_executor::{execute_pipeline, execute_simple_with_redirects};
     use rush_parser::{parse_line, Statement};
 
     let statement = parse_line(line).map_err(|e| e.to_string())?;
@@ -117,34 +116,20 @@ fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<
     match statement {
         Statement::Empty => Ok(0),
         Statement::Simple(cmd) => {
-            // Process variable assignments
-            for assignment in &cmd.assignments {
-                let value = expand_words(&[assignment.value.clone()], context)
-                    .map_err(|e| e.to_string())?;
-                context.set_var(&assignment.name, value.join(" "));
-            }
+            let exit_code = execute_simple_with_redirects(&cmd, context, interactive)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
 
-            // If there's a command to execute (not just assignments)
-            if cmd.has_command() {
-                // Expand all words (command + arguments)
-                let expanded = expand_words(&cmd.words, context)
-                    .map_err(|e| e.to_string())?;
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
+        }
+        Statement::Pipeline(pipeline) => {
+            let exit_code = execute_pipeline(&pipeline, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
 
-                if let Some(command) = expanded.first() {
-                    let args = &expanded[1..];
-                    let exit_code = execute_command(command, args, interactive)
-                        .map(|result| result.exit_code())
-                        .map_err(|e| e.to_string())?;
-
-                    context.set_exit_status(exit_code);
-                    Ok(exit_code)
-                } else {
-                    Ok(0)
-                }
-            } else {
-                // Just assignments, no command
-                Ok(0)
-            }
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
     }
 }
