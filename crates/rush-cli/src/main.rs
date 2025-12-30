@@ -67,18 +67,14 @@ fn execute_file(path: &str) -> ExitCode {
     };
 
     let mut context = Context::new();
-    let mut last_exit_code = 0;
-    for line in content.lines() {
-        match execute_line(line, &mut context, false) {
-            Ok(code) => last_exit_code = code,
-            Err(e) => {
-                eprintln!("rush: {}", e);
-                last_exit_code = 1;
-            }
+    // Parse and execute the entire file as one unit to support multi-line control flow
+    match execute_line(&content, &mut context, false) {
+        Ok(code) => ExitCode::from(code as u8),
+        Err(e) => {
+            eprintln!("rush: {}", e);
+            ExitCode::from(1)
         }
     }
-
-    ExitCode::from(last_exit_code as u8)
 }
 
 /// Execute commands from stdin
@@ -108,8 +104,7 @@ fn execute_stdin() -> ExitCode {
 
 /// Execute a single line of shell input
 fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<i32, String> {
-    use rush_executor::{execute_pipeline, execute_simple_with_redirects};
-    use rush_parser::{parse_line, CompleteCommand, Statement};
+    use rush_parser::{parse_line, Statement};
 
     let statement = parse_line(line).map_err(|e| e.to_string())?;
 
@@ -117,6 +112,13 @@ fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<
         Statement::Empty => Ok(0),
         Statement::Complete(complete_cmd) => {
             execute_complete_command(&complete_cmd, context, interactive)
+        }
+        Statement::Script(commands) => {
+            let mut last_exit_code = 0;
+            for cmd in commands {
+                last_exit_code = execute_complete_command(&cmd, context, interactive)?;
+            }
+            Ok(last_exit_code)
         }
     }
 }
@@ -126,7 +128,10 @@ fn execute_complete_command(
     context: &mut Context,
     interactive: bool,
 ) -> Result<i32, String> {
-    use rush_executor::{execute_and_or_list, execute_pipeline, execute_simple_with_redirects};
+    use rush_executor::{
+        execute_and_or_list, execute_case, execute_for, execute_if, execute_pipeline,
+        execute_simple_with_redirects, execute_while,
+    };
     use rush_parser::CompleteCommand;
 
     match cmd {
@@ -154,21 +159,37 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::If(_) => {
-            // TODO: Implement if statement execution
-            Err("If statements not yet implemented".to_string())
+        CompleteCommand::If(if_stmt) => {
+            let exit_code = execute_if(if_stmt, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
+
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
-        CompleteCommand::While(_) => {
-            // TODO: Implement while loop execution
-            Err("While loops not yet implemented".to_string())
+        CompleteCommand::While(while_stmt) => {
+            let exit_code = execute_while(while_stmt, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
+
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
-        CompleteCommand::For(_) => {
-            // TODO: Implement for loop execution
-            Err("For loops not yet implemented".to_string())
+        CompleteCommand::For(for_stmt) => {
+            let exit_code = execute_for(for_stmt, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
+
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
-        CompleteCommand::Case(_) => {
-            // TODO: Implement case statement execution
-            Err("Case statements not yet implemented".to_string())
+        CompleteCommand::Case(case_stmt) => {
+            let exit_code = execute_case(case_stmt, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
+
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
     }
 }

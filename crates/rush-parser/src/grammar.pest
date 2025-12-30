@@ -5,10 +5,11 @@ ws = _{ " " | "\t" }
 COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 // Top-level input
-input = { SOI ~ ws* ~ command_line ~ ws* ~ EOI }
+trailing_sep = _{ (NEWLINE | ";")* }
+input = { SOI ~ ws* ~ command_line ~ ws* ~ trailing_sep ~ ws* ~ EOI }
 
-// Command line: can be compound commands or pipelines
-command_line = { complete_command? }
+// Command line: can be multiple complete commands separated by newlines/semicolons
+command_line = { (complete_command ~ (separator ~ complete_command)* ~ separator?)? }
 
 // Complete command: can be a compound command or an and_or list
 complete_command = {
@@ -27,31 +28,34 @@ and_or_op = { "&&" | "||" }
 pipeline = { simple_command ~ (ws* ~ "|" ~ ws* ~ simple_command)* }
 
 // Control flow statements
+// Keywords must be followed by whitespace, separator, or EOI (not word characters)
+keyword_boundary = _{ &(ws | NEWLINE | ";" | EOI) }
+
 if_statement = {
-    "if" ~ separator ~ complete_command ~ separator ~ "then" ~ separator ~ command_list ~ separator
+    "if" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator
     ~ elif_clause*
     ~ else_clause?
-    ~ "fi"
+    ~ "fi" ~ keyword_boundary
 }
 
 elif_clause = {
-    "elif" ~ separator ~ complete_command ~ separator ~ "then" ~ separator ~ command_list ~ separator
+    "elif" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator
 }
 
 else_clause = {
-    "else" ~ separator ~ command_list ~ separator
+    "else" ~ keyword_boundary ~ separator ~ command_list ~ separator
 }
 
 while_statement = {
-    "while" ~ separator ~ complete_command ~ separator ~ "do" ~ separator ~ command_list ~ separator ~ "done"
+    "while" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator ~ "done" ~ keyword_boundary
 }
 
 for_statement = {
-    "for" ~ ws+ ~ var_name ~ ws+ ~ "in" ~ (ws+ ~ word)* ~ separator ~ "do" ~ separator ~ command_list ~ separator ~ "done"
+    "for" ~ keyword_boundary ~ ws+ ~ var_name ~ ws+ ~ "in" ~ keyword_boundary ~ (ws+ ~ word)* ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator ~ "done" ~ keyword_boundary
 }
 
 case_statement = {
-    "case" ~ ws+ ~ word ~ ws+ ~ "in" ~ separator ~ case_clause* ~ "esac"
+    "case" ~ keyword_boundary ~ ws+ ~ word ~ ws+ ~ "in" ~ keyword_boundary ~ separator ~ case_clause* ~ "esac" ~ keyword_boundary
 }
 
 case_clause = {
@@ -61,7 +65,7 @@ case_clause = {
 pattern = { word }
 
 // Command list: one or more complete commands separated by newlines or semicolons
-command_list = { (complete_command ~ separator)* ~ complete_command? }
+command_list = { complete_command ~ (separator ~ complete_command)* }
 
 // Separator: newlines, semicolons, or whitespace
 separator = _{ (ws* ~ (NEWLINE | ";") ~ ws*)+ | ws+ }
@@ -121,10 +125,14 @@ var_modifier = {
 command_substitution = { "$(" ~ command_subst_content ~ ")" }
 command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
 
+// Reserved keywords that cannot be used as bare words
+keyword = { ("if" | "then" | "elif" | "else" | "fi" | "while" | "do" | "done" | "for" | "in" | "case" | "esac") ~ &(ws | NEWLINE | ";" | EOI) }
+
 // Bare word part: literal text (no special characters)
-// Note: We exclude $, |, &, <, > to handle expansion, pipes, operators, and redirects separately
+// Note: We exclude $, |, &, <, >, ; to handle expansion, pipes, operators, redirects, and separators
 // "=" is allowed in words (needed for test command), assignments use explicit var_name pattern
-bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">") ~ ANY)+ }
+// Keywords are reserved and cannot be used as bare words
+bare_word_part = @{ !keyword ~ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">" | ";") ~ ANY)+ }
 
 // Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }
@@ -142,4 +150,4 @@ double_quoted_text = @{ (!"\"" ~ !"$" ~ ANY)+ }
 // Single quotes: no expansion (literal)
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 
-NEWLINE = { "\n" | "\r\n" }
+NEWLINE = _{ "\n" | "\r\n" }

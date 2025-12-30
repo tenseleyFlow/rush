@@ -2,8 +2,10 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
-    /// Complete command (simple, pipeline, control flow, etc.)
+    /// Single complete command (simple, pipeline, control flow, etc.)
     Complete(CompleteCommand),
+    /// Multiple complete commands (for scripts with multiple top-level commands)
+    Script(Vec<CompleteCommand>),
     /// Empty line or comment
     Empty,
 }

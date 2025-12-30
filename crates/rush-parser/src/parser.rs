@@ -54,15 +54,22 @@ pub fn parse_line(input: &str) -> Result<Statement, ParseError> {
 }
 
 fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseError> {
+    let mut commands = Vec::new();
+
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::complete_command => {
-                return Ok(Statement::Complete(parse_complete_command(inner_pair)?));
+                commands.push(parse_complete_command(inner_pair)?);
             }
             _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
         }
     }
-    Ok(Statement::Empty)
+
+    match commands.len() {
+        0 => Ok(Statement::Empty),
+        1 => Ok(Statement::Complete(commands.into_iter().next().unwrap())),
+        _ => Ok(Statement::Script(commands)),
+    }
 }
 
 fn parse_complete_command(pair: pest::iterators::Pair<Rule>) -> Result<CompleteCommand, ParseError> {
@@ -826,6 +833,41 @@ mod tests {
                 assert_eq!(pipeline.commands[0].redirects.len(), 1);
             }
             _ => panic!("Expected Pipeline"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_statement_newlines() {
+        let input = "if test 5 -eq 5\nthen\necho equal\nfi";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::If(_))) => {}
+            Ok(other) => panic!("Expected If, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_statement() {
+        let input = "if test 5 -eq 5; then echo equal; fi";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::If(_))) => {}
+            Ok(other) => panic!("Expected If, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiline_script() {
+        let input = "echo hello\necho world\n";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Script(cmds)) => {
+                assert_eq!(cmds.len(), 2);
+            }
+            Ok(other) => panic!("Expected Script, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
         }
     }
 }
