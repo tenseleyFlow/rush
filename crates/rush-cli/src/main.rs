@@ -1,4 +1,5 @@
 use clap::Parser;
+use rush_expand::Context;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -45,7 +46,8 @@ fn main() -> ExitCode {
 
 /// Execute a command string
 fn execute_string(command: &str) -> ExitCode {
-    match execute_line(command, false) {
+    let mut context = Context::new();
+    match execute_line(command, &mut context, false) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
             eprintln!("rush: {}", e);
@@ -64,9 +66,10 @@ fn execute_file(path: &str) -> ExitCode {
         }
     };
 
+    let mut context = Context::new();
     let mut last_exit_code = 0;
     for line in content.lines() {
-        match execute_line(line, false) {
+        match execute_line(line, &mut context, false) {
             Ok(code) => last_exit_code = code,
             Err(e) => {
                 eprintln!("rush: {}", e);
@@ -81,11 +84,12 @@ fn execute_file(path: &str) -> ExitCode {
 /// Execute commands from stdin
 fn execute_stdin() -> ExitCode {
     let stdin = io::stdin();
+    let mut context = Context::new();
     let mut last_exit_code = 0;
 
     for line in stdin.lock().lines() {
         match line {
-            Ok(line) => match execute_line(&line, false) {
+            Ok(line) => match execute_line(&line, &mut context, false) {
                 Ok(code) => last_exit_code = code,
                 Err(e) => {
                     eprintln!("rush: {}", e);
@@ -103,8 +107,9 @@ fn execute_stdin() -> ExitCode {
 }
 
 /// Execute a single line of shell input
-fn execute_line(line: &str, interactive: bool) -> Result<i32, String> {
+fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<i32, String> {
     use rush_executor::execute_command;
+    use rush_expand::expand_words;
     use rush_parser::{parse_line, Statement};
 
     let statement = parse_line(line).map_err(|e| e.to_string())?;
@@ -112,12 +117,32 @@ fn execute_line(line: &str, interactive: bool) -> Result<i32, String> {
     match statement {
         Statement::Empty => Ok(0),
         Statement::Simple(cmd) => {
-            if let Some(command) = cmd.command() {
-                let args = cmd.arguments();
-                execute_command(command, args, interactive)
-                    .map(|result| result.exit_code())
-                    .map_err(|e| e.to_string())
+            // Process variable assignments
+            for assignment in &cmd.assignments {
+                let value = expand_words(&[assignment.value.clone()], context)
+                    .map_err(|e| e.to_string())?;
+                context.set_var(&assignment.name, value.join(" "));
+            }
+
+            // If there's a command to execute (not just assignments)
+            if cmd.has_command() {
+                // Expand all words (command + arguments)
+                let expanded = expand_words(&cmd.words, context)
+                    .map_err(|e| e.to_string())?;
+
+                if let Some(command) = expanded.first() {
+                    let args = &expanded[1..];
+                    let exit_code = execute_command(command, args, interactive)
+                        .map(|result| result.exit_code())
+                        .map_err(|e| e.to_string())?;
+
+                    context.set_exit_status(exit_code);
+                    Ok(exit_code)
+                } else {
+                    Ok(0)
+                }
             } else {
+                // Just assignments, no command
                 Ok(0)
             }
         }
@@ -125,6 +150,6 @@ fn execute_line(line: &str, interactive: bool) -> Result<i32, String> {
 }
 
 // Make execute_line available to the repl module
-pub(crate) fn execute_interactive_line(line: &str) -> Result<(), String> {
-    execute_line(line, true).map(|_| ())
+pub(crate) fn execute_interactive_line(line: &str, context: &mut Context) -> Result<(), String> {
+    execute_line(line, context, true).map(|_| ())
 }
