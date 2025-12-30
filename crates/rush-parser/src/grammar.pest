@@ -1,4 +1,4 @@
-// Rush shell grammar (Phase 2 - Variables and expansions)
+// Rush shell grammar (Phase 3 - Pipelines and redirections)
 
 // Explicit whitespace handling (no automatic whitespace insertion)
 ws = _{ " " | "\t" }
@@ -6,16 +6,40 @@ COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 // Top-level input
 input = { SOI ~ ws* ~ command_line ~ ws* ~ EOI }
-command_line = { simple_command? }
 
-// Simple command: assignments and/or words, separated by whitespace
+// Command line: a pipeline (one or more commands separated by |)
+command_line = { pipeline? }
+pipeline = { simple_command ~ (ws* ~ "|" ~ ws* ~ simple_command)* }
+
+// Simple command: assignments and/or words, with optional redirections
 // Assignments must come before words (bash convention)
-simple_command = { assignment ~ (ws+ ~ assignment)* ~ (ws+ ~ word ~ (ws+ ~ word)*)?
-                 | word ~ (ws+ ~ word)* }
+// Redirects can appear anywhere after words, and must be tried before words to capture fd numbers
+simple_command = {
+    assignment ~ (ws+ ~ assignment)* ~ (ws+ ~ word ~ (ws+ ~ (redirect | word))*)? ~ (ws* ~ redirect)*
+    | word ~ (ws+ ~ (redirect | word))* ~ (ws* ~ redirect)*
+    | redirect ~ (ws* ~ redirect)*
+}
 
 // Variable assignment: NAME=value
 assignment = { var_name ~ "=" ~ word }
 var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Redirections: <file, >file, >>file, 2>file, 2>&1, &>file
+redirect = {
+    redirect_stderr_to_stdout  // Must come before others to match 2>&1
+    | redirect_all_output       // &>file or &>>file
+    | redirect_output_append    // >>file
+    | redirect_output           // >file or N>file
+    | redirect_input            // <file
+}
+
+redirect_input = { "<" ~ ws* ~ word }
+redirect_output = { fd_number? ~ ">" ~ ws* ~ word }
+redirect_output_append = { fd_number? ~ ">>" ~ ws* ~ word }
+redirect_stderr_to_stdout = { "2>&1" }
+redirect_all_output = { "&>" ~ ">"? ~ ws* ~ word }  // &>file or &>>file
+
+fd_number = @{ ASCII_DIGIT+ }
 
 // Word: a sequence of word parts (can mix literal text, variables, command substitution)
 // Parts are concatenated without whitespace (so "hello$VAR" is one word, "hello $VAR" is two)
@@ -43,8 +67,8 @@ command_substitution = { "$(" ~ command_subst_content ~ ")" }
 command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
 
 // Bare word part: literal text (no special characters)
-// Note: We exclude $ to handle variable expansion separately
-bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "=") ~ ANY)+ }
+// Note: We exclude $, |, <, > to handle expansion, pipes, and redirects separately
+bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "=" | "|" | "<" | ">") ~ ANY)+ }
 
 // Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }

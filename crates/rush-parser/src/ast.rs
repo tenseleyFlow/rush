@@ -4,6 +4,8 @@
 pub enum Statement {
     /// Simple command with optional variable assignments
     Simple(SimpleCommand),
+    /// Pipeline of commands connected by pipes
+    Pipeline(Pipeline),
     /// Empty line or comment
     Empty,
 }
@@ -14,6 +16,28 @@ pub struct SimpleCommand {
     pub assignments: Vec<Assignment>,
     /// Command and arguments (words that may contain expansions)
     pub words: Vec<Word>,
+    /// I/O redirections
+    pub redirects: Vec<Redirect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pipeline {
+    /// Commands connected by pipes
+    pub commands: Vec<SimpleCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Redirect {
+    /// Input redirection: <file
+    Input { file: Word },
+    /// Output redirection: >file or N>file
+    Output { fd: Option<u32>, file: Word },
+    /// Append redirection: >>file or N>>file
+    OutputAppend { fd: Option<u32>, file: Word },
+    /// Stderr to stdout: 2>&1
+    StderrToStdout,
+    /// All output: &>file or &>>file
+    AllOutput { file: Word, append: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,9 +72,35 @@ pub enum VarExpansion {
     WithDefault { name: String, default: Box<Word> },
 }
 
+impl Pipeline {
+    pub fn new(commands: Vec<SimpleCommand>) -> Self {
+        Self { commands }
+    }
+
+    pub fn is_simple(&self) -> bool {
+        self.commands.len() == 1
+    }
+}
+
 impl SimpleCommand {
     pub fn new(assignments: Vec<Assignment>, words: Vec<Word>) -> Self {
-        Self { assignments, words }
+        Self {
+            assignments,
+            words,
+            redirects: Vec::new(),
+        }
+    }
+
+    pub fn with_redirects(
+        assignments: Vec<Assignment>,
+        words: Vec<Word>,
+        redirects: Vec<Redirect>,
+    ) -> Self {
+        Self {
+            assignments,
+            words,
+            redirects,
+        }
     }
 
     pub fn has_command(&self) -> bool {
