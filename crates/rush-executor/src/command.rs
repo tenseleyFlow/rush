@@ -103,7 +103,30 @@ pub(crate) fn execute_builtin(command: &str, args: &[String]) -> Option<Executio
                 Err(_) => Some(error_result()),
             }
         }
+        "test" | "[" => {
+            let exit_code = crate::test_builtin::execute_test(args);
+            Some(exit_code_to_result(exit_code))
+        }
         _ => None,
+    }
+}
+
+fn exit_code_to_result(code: i32) -> ExecutionResult {
+    #[cfg(unix)]
+    {
+        ExecutionResult {
+            exit_status: std::process::ExitStatus::from_raw(code << 8),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, we can't easily create an ExitStatus with a specific code
+        if code == 0 {
+            success_result()
+        } else {
+            error_result()
+        }
     }
 }
 
