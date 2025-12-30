@@ -1,24 +1,65 @@
-// Rush shell grammar (Phase 1 - Simple commands only)
+// Rush shell grammar (Phase 2 - Variables and expansions)
 
-WHITESPACE = _{ " " | "\t" }
+// Explicit whitespace handling (no automatic whitespace insertion)
+ws = _{ " " | "\t" }
 COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 // Top-level input
-input = { SOI ~ command_line ~ EOI }
+input = { SOI ~ ws* ~ command_line ~ ws* ~ EOI }
 command_line = { simple_command? }
 
-// Simple command: command name followed by arguments
-simple_command = { word ~ word* }
+// Simple command: assignments and/or words, separated by whitespace
+// Assignments must come before words (bash convention)
+simple_command = { assignment ~ (ws+ ~ assignment)* ~ (ws+ ~ word ~ (ws+ ~ word)*)?
+                 | word ~ (ws+ ~ word)* }
 
-// Word: either a bare word or a quoted string
-word = { quoted_string | bare_word }
+// Variable assignment: NAME=value
+assignment = { var_name ~ "=" ~ word }
+var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
-// Bare word: any non-whitespace, non-special characters
-bare_word = @{ (!(WHITESPACE | NEWLINE | "#" | "\"" | "'") ~ ANY)+ }
+// Word: a sequence of word parts (can mix literal text, variables, command substitution)
+// Parts are concatenated without whitespace (so "hello$VAR" is one word, "hello $VAR" is two)
+word = { word_part+ }
 
-// Quoted strings
+word_part = {
+    quoted_string
+    | var_expansion
+    | command_substitution
+    | bare_word_part
+}
+
+// Variable expansion: $VAR or ${VAR} or ${VAR:-default}
+var_expansion = {
+    "${" ~ var_name ~ var_modifier? ~ "}"
+    | "$" ~ var_name
+}
+
+var_modifier = {
+    ":-" ~ word  // ${VAR:-default}
+}
+
+// Command substitution: $(command)
+command_substitution = { "$(" ~ command_subst_content ~ ")" }
+command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
+
+// Bare word part: literal text (no special characters)
+// Note: We exclude $ to handle variable expansion separately
+bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "=") ~ ANY)+ }
+
+// Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }
-double_quoted = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// Double quotes: allow variable expansion and command substitution inside
+double_quoted = { "\"" ~ double_quoted_content ~ "\"" }
+double_quoted_content = { double_quoted_part* }
+double_quoted_part = {
+    var_expansion
+    | command_substitution
+    | double_quoted_text
+}
+double_quoted_text = @{ (!"\"" ~ !"$" ~ ANY)+ }
+
+// Single quotes: no expansion (literal)
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 
 NEWLINE = _{ "\n" | "\r\n" }
