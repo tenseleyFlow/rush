@@ -2,7 +2,11 @@ use pest::Parser;
 use pest_derive::Parser;
 use thiserror::Error;
 
-use crate::ast::{Assignment, Pipeline, Redirect, SimpleCommand, Statement, VarExpansion, Word, WordPart};
+use crate::ast::{
+    AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CompleteCommand, ElifClause,
+    ForStatement, IfStatement, Pipeline, Redirect, SimpleCommand, Statement, VarExpansion,
+    WhileStatement, Word, WordPart,
+};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -52,8 +56,8 @@ pub fn parse_line(input: &str) -> Result<Statement, ParseError> {
 fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseError> {
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
-            Rule::pipeline => {
-                return parse_pipeline(inner_pair);
+            Rule::complete_command => {
+                return Ok(Statement::Complete(parse_complete_command(inner_pair)?));
             }
             _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
         }
@@ -61,7 +65,67 @@ fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, Pa
     Ok(Statement::Empty)
 }
 
-fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseError> {
+fn parse_complete_command(pair: pest::iterators::Pair<Rule>) -> Result<CompleteCommand, ParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| {
+        ParseError::UnexpectedRule(Rule::complete_command)
+    })?;
+
+    match inner.as_rule() {
+        Rule::if_statement => Ok(CompleteCommand::If(parse_if_statement(inner)?)),
+        Rule::while_statement => Ok(CompleteCommand::While(parse_while_statement(inner)?)),
+        Rule::for_statement => Ok(CompleteCommand::For(parse_for_statement(inner)?)),
+        Rule::case_statement => Ok(CompleteCommand::Case(parse_case_statement(inner)?)),
+        Rule::and_or_list => parse_and_or_list(inner),
+        _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
+    }
+}
+
+fn parse_and_or_list(pair: pest::iterators::Pair<Rule>) -> Result<CompleteCommand, ParseError> {
+    let mut pipelines = Vec::new();
+    let mut operators = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::pipeline => {
+                pipelines.push(parse_pipeline(inner_pair)?);
+            }
+            Rule::and_or_op => {
+                let op_str = inner_pair.as_str();
+                operators.push(match op_str {
+                    "&&" => AndOrOp::And,
+                    "||" => AndOrOp::Or,
+                    _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+                });
+            }
+            _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+        }
+    }
+
+    // If there's only one pipeline with no operators, return it directly
+    if pipelines.len() == 1 && operators.is_empty() {
+        let pipeline = pipelines.into_iter().next().unwrap();
+        // If it's a single-command pipeline, return as Simple
+        if pipeline.commands.len() == 1 {
+            return Ok(CompleteCommand::Simple(
+                pipeline.commands.into_iter().next().unwrap()
+            ));
+        } else {
+            return Ok(CompleteCommand::Pipeline(pipeline));
+        }
+    }
+
+    // Build the AndOrList
+    let mut pipelines_iter = pipelines.into_iter();
+    let first = pipelines_iter.next().unwrap();
+    let rest: Vec<(AndOrOp, Pipeline)> = operators
+        .into_iter()
+        .zip(pipelines_iter)
+        .collect();
+
+    Ok(CompleteCommand::AndOrList(AndOrList::new(first, rest)))
+}
+
+fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Pipeline, ParseError> {
     let mut commands = Vec::new();
 
     for inner_pair in pair.into_inner() {
@@ -73,12 +137,7 @@ fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseE
         }
     }
 
-    // If there's only one command, return it as a Simple statement
-    if commands.len() == 1 {
-        Ok(Statement::Simple(commands.into_iter().next().unwrap()))
-    } else {
-        Ok(Statement::Pipeline(Pipeline::new(commands)))
-    }
+    Ok(Pipeline::new(commands))
 }
 
 fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleCommand, ParseError> {
@@ -349,6 +408,192 @@ fn parse_redirect(pair: pest::iterators::Pair<Rule>) -> Result<Redirect, ParseEr
     }
 }
 
+fn parse_if_statement(pair: pest::iterators::Pair<Rule>) -> Result<IfStatement, ParseError> {
+    let mut condition = None;
+    let mut then_body = Vec::new();
+    let mut elif_clauses = Vec::new();
+    let mut else_body = None;
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::complete_command => {
+                if condition.is_none() {
+                    condition = Some(Box::new(parse_complete_command(inner_pair)?));
+                }
+            }
+            Rule::command_list => {
+                if condition.is_some() && then_body.is_empty() {
+                    then_body = parse_command_list(inner_pair)?;
+                }
+            }
+            Rule::elif_clause => {
+                elif_clauses.push(parse_elif_clause(inner_pair)?);
+            }
+            Rule::else_clause => {
+                else_body = Some(parse_else_clause(inner_pair)?);
+            }
+            Rule::NEWLINE => {}, // Ignore newlines
+            _ => {}, // Ignore keywords like "if", "then", "fi"
+        }
+    }
+
+    Ok(IfStatement::new(
+        condition.ok_or_else(|| ParseError::UnexpectedRule(Rule::if_statement))?,
+        then_body,
+        elif_clauses,
+        else_body,
+    ))
+}
+
+fn parse_elif_clause(pair: pest::iterators::Pair<Rule>) -> Result<ElifClause, ParseError> {
+    let mut condition = None;
+    let mut then_body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::complete_command => {
+                condition = Some(Box::new(parse_complete_command(inner_pair)?));
+            }
+            Rule::command_list => {
+                then_body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(ElifClause::new(
+        condition.ok_or_else(|| ParseError::UnexpectedRule(Rule::elif_clause))?,
+        then_body,
+    ))
+}
+
+fn parse_else_clause(pair: pest::iterators::Pair<Rule>) -> Result<Vec<CompleteCommand>, ParseError> {
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::command_list => {
+                return parse_command_list(inner_pair);
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn parse_while_statement(pair: pest::iterators::Pair<Rule>) -> Result<WhileStatement, ParseError> {
+    let mut condition = None;
+    let mut body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::complete_command => {
+                condition = Some(Box::new(parse_complete_command(inner_pair)?));
+            }
+            Rule::command_list => {
+                body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(WhileStatement::new(
+        condition.ok_or_else(|| ParseError::UnexpectedRule(Rule::while_statement))?,
+        body,
+    ))
+}
+
+fn parse_for_statement(pair: pest::iterators::Pair<Rule>) -> Result<ForStatement, ParseError> {
+    let mut var_name = String::new();
+    let mut words = Vec::new();
+    let mut body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::var_name => {
+                var_name = inner_pair.as_str().to_string();
+            }
+            Rule::word => {
+                words.push(parse_word(inner_pair)?);
+            }
+            Rule::command_list => {
+                body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(ForStatement::new(var_name, words, body))
+}
+
+fn parse_case_statement(pair: pest::iterators::Pair<Rule>) -> Result<CaseStatement, ParseError> {
+    let mut word = None;
+    let mut clauses = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::word => {
+                if word.is_none() {
+                    word = Some(parse_word(inner_pair)?);
+                }
+            }
+            Rule::case_clause => {
+                clauses.push(parse_case_clause(inner_pair)?);
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(CaseStatement::new(
+        word.ok_or_else(|| ParseError::UnexpectedRule(Rule::case_statement))?,
+        clauses,
+    ))
+}
+
+fn parse_case_clause(pair: pest::iterators::Pair<Rule>) -> Result<CaseClause, ParseError> {
+    let mut patterns = Vec::new();
+    let mut body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::pattern => {
+                // Pattern contains a word
+                for pattern_part in inner_pair.into_inner() {
+                    if pattern_part.as_rule() == Rule::word {
+                        patterns.push(parse_word(pattern_part)?);
+                    }
+                }
+            }
+            Rule::command_list => {
+                body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(CaseClause::new(patterns, body))
+}
+
+fn parse_command_list(pair: pest::iterators::Pair<Rule>) -> Result<Vec<CompleteCommand>, ParseError> {
+    let mut commands = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::complete_command => {
+                commands.push(parse_complete_command(inner_pair)?);
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(commands)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,7 +602,7 @@ mod tests {
     fn test_parse_simple_command() {
         let result = parse_line("ls").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.assignments.len(), 0);
                 assert_eq!(cmd.words.len(), 1);
                 assert!(cmd.words[0].is_literal());
@@ -370,7 +615,7 @@ mod tests {
     fn test_parse_with_variable() {
         let result = parse_line("echo $USER").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.words.len(), 2);
                 // First word: "echo"
                 assert!(cmd.words[0].is_literal());
@@ -391,7 +636,7 @@ mod tests {
     fn test_parse_assignment() {
         let result = parse_line("FOO=bar").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.assignments.len(), 1);
                 assert_eq!(cmd.assignments[0].name, "FOO");
                 assert!(cmd.assignments[0].value.is_literal());
@@ -404,7 +649,7 @@ mod tests {
     fn test_parse_assignment_with_command() {
         let result = parse_line("FOO=bar echo test").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.assignments.len(), 1);
                 assert_eq!(cmd.words.len(), 2);
             }
@@ -416,7 +661,7 @@ mod tests {
     fn test_parse_braced_var() {
         let result = parse_line("echo ${VAR}").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 match &cmd.words[1].parts[0] {
                     WordPart::VarExpansion(VarExpansion::Braced(name)) => {
                         assert_eq!(name, "VAR");
@@ -432,7 +677,7 @@ mod tests {
     fn test_parse_command_substitution() {
         let result = parse_line("echo $(pwd)").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 match &cmd.words[1].parts[0] {
                     WordPart::CommandSubstitution(content) => {
                         assert_eq!(content, "pwd");
@@ -448,7 +693,7 @@ mod tests {
     fn test_parse_simple_pipeline() {
         let result = parse_line("ls | grep test").unwrap();
         match result {
-            Statement::Pipeline(pipeline) => {
+            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
                 assert_eq!(pipeline.commands.len(), 2);
                 assert_eq!(pipeline.commands[0].words.len(), 1);
                 assert_eq!(pipeline.commands[1].words.len(), 2);
@@ -461,7 +706,7 @@ mod tests {
     fn test_parse_three_command_pipeline() {
         let result = parse_line("ls -la | grep rush | wc -l").unwrap();
         match result {
-            Statement::Pipeline(pipeline) => {
+            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
                 assert_eq!(pipeline.commands.len(), 3);
             }
             _ => panic!("Expected Pipeline"),
@@ -472,7 +717,7 @@ mod tests {
     fn test_parse_input_redirect() {
         let result = parse_line("cat <file.txt").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Input { file } => {
@@ -489,7 +734,7 @@ mod tests {
     fn test_parse_output_redirect() {
         let result = parse_line("echo hello >output.txt").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Output { fd, file } => {
@@ -507,7 +752,7 @@ mod tests {
     fn test_parse_append_redirect() {
         let result = parse_line("echo hello >>output.txt").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::OutputAppend { fd, file } => {
@@ -525,7 +770,7 @@ mod tests {
     fn test_parse_stderr_redirect() {
         let result = parse_line("command 2>error.log").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Output { fd, file } => {
@@ -543,7 +788,7 @@ mod tests {
     fn test_parse_stderr_to_stdout() {
         let result = parse_line("command 2>&1").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::StderrToStdout => {}
@@ -558,7 +803,7 @@ mod tests {
     fn test_parse_all_output_redirect() {
         let result = parse_line("command &>output.txt").unwrap();
         match result {
-            Statement::Simple(cmd) => {
+            Statement::Complete(CompleteCommand::Simple(cmd)) => {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::AllOutput { file, append } => {
@@ -576,7 +821,7 @@ mod tests {
     fn test_parse_pipeline_with_redirects() {
         let result = parse_line("ls >list.txt | grep test").unwrap();
         match result {
-            Statement::Pipeline(pipeline) => {
+            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
                 assert_eq!(pipeline.commands.len(), 2);
                 assert_eq!(pipeline.commands[0].redirects.len(), 1);
             }

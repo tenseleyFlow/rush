@@ -3,5 +3,9 @@
 pub mod ast;
 pub mod parser;
 
-pub use ast::{Assignment, SimpleCommand, Statement, VarExpansion, Word, WordPart};
+pub use ast::{
+    AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CompleteCommand, ElifClause,
+    ForStatement, IfStatement, Pipeline, Redirect, SimpleCommand, Statement, VarExpansion,
+    WhileStatement, Word, WordPart,
+};
 pub use parser::{parse_line, ParseError};
