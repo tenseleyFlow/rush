@@ -109,27 +109,62 @@ fn execute_stdin() -> ExitCode {
 /// Execute a single line of shell input
 fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<i32, String> {
     use rush_executor::{execute_pipeline, execute_simple_with_redirects};
-    use rush_parser::{parse_line, Statement};
+    use rush_parser::{parse_line, CompleteCommand, Statement};
 
     let statement = parse_line(line).map_err(|e| e.to_string())?;
 
     match statement {
         Statement::Empty => Ok(0),
-        Statement::Simple(cmd) => {
-            let exit_code = execute_simple_with_redirects(&cmd, context, interactive)
+        Statement::Complete(complete_cmd) => {
+            execute_complete_command(&complete_cmd, context, interactive)
+        }
+    }
+}
+
+fn execute_complete_command(
+    cmd: &rush_parser::CompleteCommand,
+    context: &mut Context,
+    interactive: bool,
+) -> Result<i32, String> {
+    use rush_executor::{execute_pipeline, execute_simple_with_redirects};
+    use rush_parser::CompleteCommand;
+
+    match cmd {
+        CompleteCommand::Simple(simple_cmd) => {
+            let exit_code = execute_simple_with_redirects(simple_cmd, context, interactive)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
 
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        Statement::Pipeline(pipeline) => {
-            let exit_code = execute_pipeline(&pipeline, context)
+        CompleteCommand::Pipeline(pipeline) => {
+            let exit_code = execute_pipeline(pipeline, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
 
             context.set_exit_status(exit_code);
             Ok(exit_code)
+        }
+        CompleteCommand::AndOrList(_) => {
+            // TODO: Implement && and || execution
+            Err("AndOr lists not yet implemented".to_string())
+        }
+        CompleteCommand::If(_) => {
+            // TODO: Implement if statement execution
+            Err("If statements not yet implemented".to_string())
+        }
+        CompleteCommand::While(_) => {
+            // TODO: Implement while loop execution
+            Err("While loops not yet implemented".to_string())
+        }
+        CompleteCommand::For(_) => {
+            // TODO: Implement for loop execution
+            Err("For loops not yet implemented".to_string())
+        }
+        CompleteCommand::Case(_) => {
+            // TODO: Implement case statement execution
+            Err("Case statements not yet implemented".to_string())
         }
     }
 }
