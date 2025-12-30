@@ -2,12 +2,28 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
+    /// Complete command (simple, pipeline, control flow, etc.)
+    Complete(CompleteCommand),
+    /// Empty line or comment
+    Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompleteCommand {
     /// Simple command with optional variable assignments
     Simple(SimpleCommand),
     /// Pipeline of commands connected by pipes
     Pipeline(Pipeline),
-    /// Empty line or comment
-    Empty,
+    /// Commands connected by && or ||
+    AndOrList(AndOrList),
+    /// If statement
+    If(IfStatement),
+    /// While loop
+    While(WhileStatement),
+    /// For loop
+    For(ForStatement),
+    /// Case statement
+    Case(CaseStatement),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +54,76 @@ pub enum Redirect {
     StderrToStdout,
     /// All output: &>file or &>>file
     AllOutput { file: Word, append: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AndOrList {
+    /// First pipeline in the list
+    pub first: Pipeline,
+    /// Remaining pipelines with their operators
+    pub rest: Vec<(AndOrOp, Pipeline)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AndOrOp {
+    /// && operator (execute next if previous succeeded)
+    And,
+    /// || operator (execute next if previous failed)
+    Or,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfStatement {
+    /// Condition to test
+    pub condition: Box<CompleteCommand>,
+    /// Commands to execute if condition is true
+    pub then_body: Vec<CompleteCommand>,
+    /// Elif clauses
+    pub elif_clauses: Vec<ElifClause>,
+    /// Else body (optional)
+    pub else_body: Option<Vec<CompleteCommand>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElifClause {
+    /// Condition to test
+    pub condition: Box<CompleteCommand>,
+    /// Commands to execute if condition is true
+    pub then_body: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhileStatement {
+    /// Condition to test
+    pub condition: Box<CompleteCommand>,
+    /// Commands to execute while condition is true
+    pub body: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForStatement {
+    /// Variable name to iterate over
+    pub var_name: String,
+    /// Words to iterate through
+    pub words: Vec<Word>,
+    /// Commands to execute for each word
+    pub body: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaseStatement {
+    /// Word to match against patterns
+    pub word: Word,
+    /// Case clauses with patterns and bodies
+    pub clauses: Vec<CaseClause>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaseClause {
+    /// Patterns to match (connected by |)
+    pub patterns: Vec<Word>,
+    /// Commands to execute if pattern matches
+    pub body: Vec<CompleteCommand>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,5 +213,64 @@ impl Word {
 impl Assignment {
     pub fn new(name: String, value: Word) -> Self {
         Self { name, value }
+    }
+}
+
+impl AndOrList {
+    pub fn new(first: Pipeline, rest: Vec<(AndOrOp, Pipeline)>) -> Self {
+        Self { first, rest }
+    }
+}
+
+impl IfStatement {
+    pub fn new(
+        condition: Box<CompleteCommand>,
+        then_body: Vec<CompleteCommand>,
+        elif_clauses: Vec<ElifClause>,
+        else_body: Option<Vec<CompleteCommand>>,
+    ) -> Self {
+        Self {
+            condition,
+            then_body,
+            elif_clauses,
+            else_body,
+        }
+    }
+}
+
+impl ElifClause {
+    pub fn new(condition: Box<CompleteCommand>, then_body: Vec<CompleteCommand>) -> Self {
+        Self {
+            condition,
+            then_body,
+        }
+    }
+}
+
+impl WhileStatement {
+    pub fn new(condition: Box<CompleteCommand>, body: Vec<CompleteCommand>) -> Self {
+        Self { condition, body }
+    }
+}
+
+impl ForStatement {
+    pub fn new(var_name: String, words: Vec<Word>, body: Vec<CompleteCommand>) -> Self {
+        Self {
+            var_name,
+            words,
+            body,
+        }
+    }
+}
+
+impl CaseStatement {
+    pub fn new(word: Word, clauses: Vec<CaseClause>) -> Self {
+        Self { word, clauses }
+    }
+}
+
+impl CaseClause {
+    pub fn new(patterns: Vec<Word>, body: Vec<CompleteCommand>) -> Self {
+        Self { patterns, body }
     }
 }

@@ -1,4 +1,4 @@
-// Rush shell grammar (Phase 3 - Pipelines and redirections)
+// Rush shell grammar (Phase 4 - Control Flow)
 
 // Explicit whitespace handling (no automatic whitespace insertion)
 ws = _{ " " | "\t" }
@@ -7,9 +7,64 @@ COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
 // Top-level input
 input = { SOI ~ ws* ~ command_line ~ ws* ~ EOI }
 
-// Command line: a pipeline (one or more commands separated by |)
-command_line = { pipeline? }
+// Command line: can be compound commands or pipelines
+command_line = { complete_command? }
+
+// Complete command: can be a compound command or an and_or list
+complete_command = {
+    if_statement
+    | while_statement
+    | for_statement
+    | case_statement
+    | and_or_list
+}
+
+// And/Or list: pipelines connected by && or ||
+and_or_list = { pipeline ~ (ws* ~ and_or_op ~ ws* ~ pipeline)* }
+and_or_op = { "&&" | "||" }
+
+// Pipeline: commands connected by pipes
 pipeline = { simple_command ~ (ws* ~ "|" ~ ws* ~ simple_command)* }
+
+// Control flow statements
+if_statement = {
+    "if" ~ separator ~ complete_command ~ separator ~ "then" ~ separator ~ command_list ~ separator
+    ~ elif_clause*
+    ~ else_clause?
+    ~ "fi"
+}
+
+elif_clause = {
+    "elif" ~ separator ~ complete_command ~ separator ~ "then" ~ separator ~ command_list ~ separator
+}
+
+else_clause = {
+    "else" ~ separator ~ command_list ~ separator
+}
+
+while_statement = {
+    "while" ~ separator ~ complete_command ~ separator ~ "do" ~ separator ~ command_list ~ separator ~ "done"
+}
+
+for_statement = {
+    "for" ~ ws+ ~ var_name ~ ws+ ~ "in" ~ (ws+ ~ word)* ~ separator ~ "do" ~ separator ~ command_list ~ separator ~ "done"
+}
+
+case_statement = {
+    "case" ~ ws+ ~ word ~ ws+ ~ "in" ~ separator ~ case_clause* ~ "esac"
+}
+
+case_clause = {
+    ws* ~ pattern ~ (ws* ~ "|" ~ ws* ~ pattern)* ~ ws* ~ ")" ~ separator ~ command_list ~ ws* ~ ";;" ~ separator
+}
+
+pattern = { word }
+
+// Command list: one or more complete commands separated by newlines or semicolons
+command_list = { (complete_command ~ separator)* ~ complete_command? }
+
+// Separator: newlines, semicolons, or whitespace
+separator = _{ (ws* ~ (NEWLINE | ";") ~ ws*)+ | ws+ }
 
 // Simple command: assignments and/or words, with optional redirections
 // Assignments must come before words (bash convention)
@@ -86,4 +141,4 @@ double_quoted_text = @{ (!"\"" ~ !"$" ~ ANY)+ }
 // Single quotes: no expansion (literal)
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 
-NEWLINE = _{ "\n" | "\r\n" }
+NEWLINE = { "\n" | "\r\n" }
