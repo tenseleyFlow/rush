@@ -2,7 +2,7 @@ use pest::Parser;
 use pest_derive::Parser;
 use thiserror::Error;
 
-use crate::ast::{Assignment, SimpleCommand, Statement, VarExpansion, Word, WordPart};
+use crate::ast::{Assignment, Pipeline, Redirect, SimpleCommand, Statement, VarExpansion, Word, WordPart};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -52,8 +52,8 @@ pub fn parse_line(input: &str) -> Result<Statement, ParseError> {
 fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseError> {
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
-            Rule::simple_command => {
-                return Ok(Statement::Simple(parse_simple_command(inner_pair)?));
+            Rule::pipeline => {
+                return parse_pipeline(inner_pair);
             }
             _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
         }
@@ -61,9 +61,30 @@ fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, Pa
     Ok(Statement::Empty)
 }
 
+fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Statement, ParseError> {
+    let mut commands = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::simple_command => {
+                commands.push(parse_simple_command(inner_pair)?);
+            }
+            _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+        }
+    }
+
+    // If there's only one command, return it as a Simple statement
+    if commands.len() == 1 {
+        Ok(Statement::Simple(commands.into_iter().next().unwrap()))
+    } else {
+        Ok(Statement::Pipeline(Pipeline::new(commands)))
+    }
+}
+
 fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleCommand, ParseError> {
     let mut assignments = Vec::new();
     let mut words = Vec::new();
+    let mut redirects = Vec::new();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
@@ -73,11 +94,18 @@ fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleComma
             Rule::word => {
                 words.push(parse_word(inner_pair)?);
             }
+            Rule::redirect => {
+                redirects.push(parse_redirect(inner_pair)?);
+            }
             _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
         }
     }
 
-    Ok(SimpleCommand::new(assignments, words))
+    if redirects.is_empty() {
+        Ok(SimpleCommand::new(assignments, words))
+    } else {
+        Ok(SimpleCommand::with_redirects(assignments, words, redirects))
+    }
 }
 
 fn parse_assignment(pair: pest::iterators::Pair<Rule>) -> Result<Assignment, ParseError> {
@@ -242,6 +270,85 @@ fn parse_double_quoted_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Wor
     }
 }
 
+fn parse_redirect(pair: pest::iterators::Pair<Rule>) -> Result<Redirect, ParseError> {
+    let inner = pair.into_inner().next().ok_or_else(|| {
+        ParseError::UnexpectedRule(Rule::redirect)
+    })?;
+
+    match inner.as_rule() {
+        Rule::redirect_input => {
+            let word = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_input))?;
+            Ok(Redirect::Input {
+                file: parse_word(word)?,
+            })
+        }
+        Rule::redirect_output => {
+            let mut fd = None;
+            let mut file_word = None;
+
+            for inner_pair in inner.into_inner() {
+                match inner_pair.as_rule() {
+                    Rule::fd_number => {
+                        fd = Some(inner_pair.as_str().parse::<u32>().map_err(|_| {
+                            ParseError::UnexpectedRule(Rule::fd_number)
+                        })?);
+                    }
+                    Rule::word => {
+                        file_word = Some(parse_word(inner_pair)?);
+                    }
+                    _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+                }
+            }
+
+            Ok(Redirect::Output {
+                fd,
+                file: file_word.ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_output))?,
+            })
+        }
+        Rule::redirect_output_append => {
+            let mut fd = None;
+            let mut file_word = None;
+
+            for inner_pair in inner.into_inner() {
+                match inner_pair.as_rule() {
+                    Rule::fd_number => {
+                        fd = Some(inner_pair.as_str().parse::<u32>().map_err(|_| {
+                            ParseError::UnexpectedRule(Rule::fd_number)
+                        })?);
+                    }
+                    Rule::word => {
+                        file_word = Some(parse_word(inner_pair)?);
+                    }
+                    _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+                }
+            }
+
+            Ok(Redirect::OutputAppend {
+                fd,
+                file: file_word.ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_output_append))?,
+            })
+        }
+        Rule::redirect_stderr_to_stdout => {
+            Ok(Redirect::StderrToStdout)
+        }
+        Rule::redirect_all_output => {
+            // Check if it's &>> (append) or &> (truncate)
+            let text = inner.as_str();
+            let append = text.starts_with("&>>");
+
+            let word = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_all_output))?;
+
+            Ok(Redirect::AllOutput {
+                file: parse_word(word)?,
+                append,
+            })
+        }
+        _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +441,146 @@ mod tests {
                 }
             }
             _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_simple_pipeline() {
+        let result = parse_line("ls | grep test").unwrap();
+        match result {
+            Statement::Pipeline(pipeline) => {
+                assert_eq!(pipeline.commands.len(), 2);
+                assert_eq!(pipeline.commands[0].words.len(), 1);
+                assert_eq!(pipeline.commands[1].words.len(), 2);
+            }
+            _ => panic!("Expected Pipeline"),
+        }
+    }
+
+    #[test]
+    fn test_parse_three_command_pipeline() {
+        let result = parse_line("ls -la | grep rush | wc -l").unwrap();
+        match result {
+            Statement::Pipeline(pipeline) => {
+                assert_eq!(pipeline.commands.len(), 3);
+            }
+            _ => panic!("Expected Pipeline"),
+        }
+    }
+
+    #[test]
+    fn test_parse_input_redirect() {
+        let result = parse_line("cat <file.txt").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::Input { file } => {
+                        assert!(file.is_literal());
+                    }
+                    _ => panic!("Expected Input redirect"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_output_redirect() {
+        let result = parse_line("echo hello >output.txt").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::Output { fd, file } => {
+                        assert_eq!(*fd, None);
+                        assert!(file.is_literal());
+                    }
+                    _ => panic!("Expected Output redirect"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_append_redirect() {
+        let result = parse_line("echo hello >>output.txt").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::OutputAppend { fd, file } => {
+                        assert_eq!(*fd, None);
+                        assert!(file.is_literal());
+                    }
+                    _ => panic!("Expected OutputAppend redirect"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stderr_redirect() {
+        let result = parse_line("command 2>error.log").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::Output { fd, file } => {
+                        assert_eq!(*fd, Some(2));
+                        assert!(file.is_literal());
+                    }
+                    _ => panic!("Expected Output redirect with fd 2"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stderr_to_stdout() {
+        let result = parse_line("command 2>&1").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::StderrToStdout => {}
+                    _ => panic!("Expected StderrToStdout redirect"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_output_redirect() {
+        let result = parse_line("command &>output.txt").unwrap();
+        match result {
+            Statement::Simple(cmd) => {
+                assert_eq!(cmd.redirects.len(), 1);
+                match &cmd.redirects[0] {
+                    Redirect::AllOutput { file, append } => {
+                        assert!(!append);
+                        assert!(file.is_literal());
+                    }
+                    _ => panic!("Expected AllOutput redirect"),
+                }
+            }
+            _ => panic!("Expected Simple command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_pipeline_with_redirects() {
+        let result = parse_line("ls >list.txt | grep test").unwrap();
+        match result {
+            Statement::Pipeline(pipeline) => {
+                assert_eq!(pipeline.commands.len(), 2);
+                assert_eq!(pipeline.commands[0].redirects.len(), 1);
+            }
+            _ => panic!("Expected Pipeline"),
         }
     }
 }
