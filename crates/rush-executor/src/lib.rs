@@ -6,7 +6,7 @@ pub mod redirect;
 pub mod terminal;
 
 pub use command::{execute_command, ExecutionError, ExecutionResult};
-pub use pipeline::{execute_pipeline, execute_simple_with_redirects, PipelineError};
+pub use pipeline::{execute_and_or_list, execute_pipeline, execute_simple_with_redirects, PipelineError};
 pub use redirect::RedirectError;
 
 // Export signal setup function

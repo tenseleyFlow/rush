@@ -122,8 +122,8 @@ command_substitution = { "$(" ~ command_subst_content ~ ")" }
 command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
 
 // Bare word part: literal text (no special characters)
-// Note: We exclude $, |, <, > to handle expansion, pipes, and redirects separately
-bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "=" | "|" | "<" | ">") ~ ANY)+ }
+// Note: We exclude $, |, &, <, > to handle expansion, pipes, operators, and redirects separately
+bare_word_part = @{ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "=" | "|" | "&" | "<" | ">") ~ ANY)+ }
 
 // Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }

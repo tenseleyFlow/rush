@@ -126,7 +126,7 @@ fn execute_complete_command(
     context: &mut Context,
     interactive: bool,
 ) -> Result<i32, String> {
-    use rush_executor::{execute_pipeline, execute_simple_with_redirects};
+    use rush_executor::{execute_and_or_list, execute_pipeline, execute_simple_with_redirects};
     use rush_parser::CompleteCommand;
 
     match cmd {
@@ -146,9 +146,13 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::AndOrList(_) => {
-            // TODO: Implement && and || execution
-            Err("AndOr lists not yet implemented".to_string())
+        CompleteCommand::AndOrList(and_or_list) => {
+            let exit_code = execute_and_or_list(and_or_list, context)
+                .map(|result| result.exit_code())
+                .map_err(|e| e.to_string())?;
+
+            context.set_exit_status(exit_code);
+            Ok(exit_code)
         }
         CompleteCommand::If(_) => {
             // TODO: Implement if statement execution

@@ -2,7 +2,7 @@ use crate::command::find_in_path;
 use crate::redirect::{apply_redirects, RedirectError};
 use crate::{ExecutionError, ExecutionResult};
 use rush_expand::Context;
-use rush_parser::ast::{Pipeline, SimpleCommand};
+use rush_parser::ast::{AndOrList, AndOrOp, Pipeline, SimpleCommand};
 use std::process::{Command, Stdio};
 use thiserror::Error;
 
@@ -115,6 +115,35 @@ pub fn execute_pipeline(
     Ok(ExecutionResult {
         exit_status: last_exit_status.unwrap(),
     })
+}
+
+/// Execute an AndOrList (commands connected by && or ||)
+///
+/// Commands are executed left-to-right with short-circuit evaluation:
+/// - && executes the next command only if the previous succeeded (exit code 0)
+/// - || executes the next command only if the previous failed (exit code != 0)
+pub fn execute_and_or_list(
+    and_or_list: &AndOrList,
+    context: &mut Context,
+) -> Result<ExecutionResult, PipelineError> {
+    // Execute the first pipeline
+    let mut last_result = execute_pipeline(&and_or_list.first, context)?;
+    let mut last_exit_code = last_result.exit_code();
+
+    // Execute remaining pipelines with their operators
+    for (op, pipeline) in &and_or_list.rest {
+        let should_execute = match op {
+            AndOrOp::And => last_exit_code == 0,  // && - execute if previous succeeded
+            AndOrOp::Or => last_exit_code != 0,   // || - execute if previous failed
+        };
+
+        if should_execute {
+            last_result = execute_pipeline(pipeline, context)?;
+            last_exit_code = last_result.exit_code();
+        }
+    }
+
+    Ok(last_result)
 }
 
 /// Execute a simple command with redirections
