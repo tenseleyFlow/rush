@@ -618,10 +618,14 @@ mod tests {
     fn test_parse_simple_command() {
         let result = parse_line("ls").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.assignments.len(), 0);
                 assert_eq!(cmd.words.len(), 1);
                 assert!(cmd.words[0].is_literal());
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Simple command"),
         }
@@ -631,7 +635,8 @@ mod tests {
     fn test_parse_with_variable() {
         let result = parse_line("echo $USER").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.words.len(), 2);
                 // First word: "echo"
                 assert!(cmd.words[0].is_literal());
@@ -643,6 +648,9 @@ mod tests {
                     }
                     _ => panic!("Expected variable expansion"),
                 }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Simple command"),
         }
@@ -652,10 +660,14 @@ mod tests {
     fn test_parse_assignment() {
         let result = parse_line("FOO=bar").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.assignments.len(), 1);
                 assert_eq!(cmd.assignments[0].name, "FOO");
                 assert!(cmd.assignments[0].value.is_literal());
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Simple command"),
         }
@@ -665,9 +677,13 @@ mod tests {
     fn test_parse_assignment_with_command() {
         let result = parse_line("FOO=bar echo test").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.assignments.len(), 1);
                 assert_eq!(cmd.words.len(), 2);
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Simple command"),
         }
@@ -677,12 +693,16 @@ mod tests {
     fn test_parse_braced_var() {
         let result = parse_line("echo ${VAR}").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 match &cmd.words[1].parts[0] {
                     WordPart::VarExpansion(VarExpansion::Braced(name)) => {
                         assert_eq!(name, "VAR");
                     }
                     _ => panic!("Expected braced variable expansion"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -693,12 +713,16 @@ mod tests {
     fn test_parse_command_substitution() {
         let result = parse_line("echo $(pwd)").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 match &cmd.words[1].parts[0] {
                     WordPart::CommandSubstitution(content) => {
                         assert_eq!(content, "pwd");
                     }
                     _ => panic!("Expected command substitution"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -709,10 +733,14 @@ mod tests {
     fn test_parse_simple_pipeline() {
         let result = parse_line("ls | grep test").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Pipeline(pipeline) = &complete_cmd.command {
                 assert_eq!(pipeline.commands.len(), 2);
                 assert_eq!(pipeline.commands[0].words.len(), 1);
                 assert_eq!(pipeline.commands[1].words.len(), 2);
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Pipeline"),
         }
@@ -722,8 +750,12 @@ mod tests {
     fn test_parse_three_command_pipeline() {
         let result = parse_line("ls -la | grep rush | wc -l").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Pipeline(pipeline) = &complete_cmd.command {
                 assert_eq!(pipeline.commands.len(), 3);
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Pipeline"),
         }
@@ -733,13 +765,17 @@ mod tests {
     fn test_parse_input_redirect() {
         let result = parse_line("cat <file.txt").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Input { file } => {
                         assert!(file.is_literal());
                     }
                     _ => panic!("Expected Input redirect"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -750,7 +786,8 @@ mod tests {
     fn test_parse_output_redirect() {
         let result = parse_line("echo hello >output.txt").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Output { fd, file } => {
@@ -758,6 +795,9 @@ mod tests {
                         assert!(file.is_literal());
                     }
                     _ => panic!("Expected Output redirect"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -768,7 +808,8 @@ mod tests {
     fn test_parse_append_redirect() {
         let result = parse_line("echo hello >>output.txt").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::OutputAppend { fd, file } => {
@@ -776,6 +817,9 @@ mod tests {
                         assert!(file.is_literal());
                     }
                     _ => panic!("Expected OutputAppend redirect"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -786,7 +830,8 @@ mod tests {
     fn test_parse_stderr_redirect() {
         let result = parse_line("command 2>error.log").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::Output { fd, file } => {
@@ -794,6 +839,9 @@ mod tests {
                         assert!(file.is_literal());
                     }
                     _ => panic!("Expected Output redirect with fd 2"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -804,11 +852,15 @@ mod tests {
     fn test_parse_stderr_to_stdout() {
         let result = parse_line("command 2>&1").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::StderrToStdout => {}
                     _ => panic!("Expected StderrToStdout redirect"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -819,7 +871,8 @@ mod tests {
     fn test_parse_all_output_redirect() {
         let result = parse_line("command &>output.txt").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Simple(cmd)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Simple(cmd) = &complete_cmd.command {
                 assert_eq!(cmd.redirects.len(), 1);
                 match &cmd.redirects[0] {
                     Redirect::AllOutput { file, append } => {
@@ -827,6 +880,9 @@ mod tests {
                         assert!(file.is_literal());
                     }
                     _ => panic!("Expected AllOutput redirect"),
+                }
+                } else {
+                    panic!("Expected Simple or Pipeline command");
                 }
             }
             _ => panic!("Expected Simple command"),
@@ -837,9 +893,13 @@ mod tests {
     fn test_parse_pipeline_with_redirects() {
         let result = parse_line("ls >list.txt | grep test").unwrap();
         match result {
-            Statement::Complete(CompleteCommand::Pipeline(pipeline)) => {
+            Statement::Complete(complete_cmd) => {
+                if let CommandType::Pipeline(pipeline) = &complete_cmd.command {
                 assert_eq!(pipeline.commands.len(), 2);
                 assert_eq!(pipeline.commands[0].redirects.len(), 1);
+                } else {
+                    panic!("Expected Simple or Pipeline command");
+                }
             }
             _ => panic!("Expected Pipeline"),
         }
@@ -850,7 +910,7 @@ mod tests {
         let input = "if test 5 -eq 5\nthen\necho equal\nfi";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::If(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::If(_)) => {}
             Ok(other) => panic!("Expected If, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
@@ -861,7 +921,7 @@ mod tests {
         let input = "if test 5 -eq 5; then echo equal; fi";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::If(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::If(_)) => {}
             Ok(other) => panic!("Expected If, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
@@ -885,7 +945,7 @@ mod tests {
         let input = "while false; do echo test; done";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::While(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::While(_)) => {}
             Ok(other) => panic!("Expected While, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
@@ -896,7 +956,7 @@ mod tests {
         let input = "while false\ndo\necho test\ndone";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::While(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::While(_)) => {}
             Ok(other) => panic!("Expected While, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
@@ -907,7 +967,7 @@ mod tests {
         let input = "case x in a) echo matched;; esac";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::Case(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::Case(_)) => {}
             Ok(other) => panic!("Expected Case, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
@@ -918,7 +978,7 @@ mod tests {
         let input = "case x in a) echo first;; b) echo second;; esac";
         let result = parse_line(input);
         match result {
-            Ok(Statement::Complete(CompleteCommand::Case(_))) => {}
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::Case(_)) => {}
             Ok(other) => panic!("Expected Case, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
