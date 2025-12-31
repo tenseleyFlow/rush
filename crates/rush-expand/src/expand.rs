@@ -1,3 +1,5 @@
+use crate::brace::expand_brace;
+use crate::brace_parse::detect_brace_patterns;
 use crate::command_subst::{execute_command_substitution, CommandSubstError};
 use crate::context::Context;
 use rush_parser::{VarExpansion, Word, WordPart};
@@ -12,8 +14,42 @@ pub enum ExpansionError {
     Other(String),
 }
 
-/// Expand a Word into a String by resolving all expansions
-pub fn expand_word(word: &Word, context: &Context) -> Result<String, ExpansionError> {
+/// Expand a Word into one or more Strings (due to brace expansion)
+pub fn expand_word_with_braces(word: &Word, context: &Context) -> Result<Vec<String>, ExpansionError> {
+    // Find if there's a brace expansion
+    let brace_index = word.parts.iter().position(|p| matches!(p, WordPart::BraceExpansion(_)));
+
+    if let Some(idx) = brace_index {
+        // Has brace expansion - expand it into multiple words
+        let mut results = Vec::new();
+
+        // Get the brace expansion
+        if let WordPart::BraceExpansion(brace) = &word.parts[idx] {
+            let expansions = expand_brace(brace);
+
+            // For each expansion, build a complete word
+            for expanded_part in expansions {
+                let mut parts_copy = word.parts.clone();
+                // Replace the brace expansion with a literal
+                parts_copy[idx] = WordPart::Literal(expanded_part);
+
+                // Create a new word and expand it (recursively handles nested braces)
+                let new_word = Word::new(parts_copy);
+                let mut nested_results = expand_word_with_braces(&new_word, context)?;
+                results.append(&mut nested_results);
+            }
+        }
+
+        Ok(results)
+    } else {
+        // No brace expansion - just expand normally
+        let result = expand_word_simple(word, context)?;
+        Ok(vec![result])
+    }
+}
+
+/// Expand a Word into a String by resolving all expansions (no brace expansion)
+fn expand_word_simple(word: &Word, context: &Context) -> Result<String, ExpansionError> {
     let mut result = String::new();
 
     for part in &word.parts {
@@ -29,10 +65,23 @@ pub fn expand_word(word: &Word, context: &Context) -> Result<String, ExpansionEr
                 let output = execute_command_substitution(cmd)?;
                 result.push_str(&output);
             }
+            WordPart::BraceExpansion(_) => {
+                // Should not happen - braces are handled in expand_word_with_braces
+                return Err(ExpansionError::Other(
+                    "Unexpected brace expansion in simple expansion".to_string(),
+                ));
+            }
         }
     }
 
     Ok(result)
+}
+
+/// Expand a Word into a String by resolving all expansions
+/// (Kept for backward compatibility - delegates to new function)
+pub fn expand_word(word: &Word, context: &Context) -> Result<String, ExpansionError> {
+    let results = expand_word_with_braces(word, context)?;
+    Ok(results.join(" "))
 }
 
 /// Expand a variable reference
@@ -56,8 +105,18 @@ fn expand_var(var_exp: &VarExpansion, context: &Context) -> Result<String, Expan
 }
 
 /// Expand multiple words (e.g., command arguments)
+/// Each word may expand into multiple words due to brace expansion
 pub fn expand_words(words: &[Word], context: &Context) -> Result<Vec<String>, ExpansionError> {
-    words.iter().map(|w| expand_word(w, context)).collect()
+    let mut results = Vec::new();
+    for word in words {
+        // First, detect and parse any brace patterns in literals
+        let word_with_braces = detect_brace_patterns(word);
+
+        // Then expand the word (which may produce multiple results due to braces)
+        let mut expanded = expand_word_with_braces(&word_with_braces, context)?;
+        results.append(&mut expanded);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]

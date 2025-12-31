@@ -157,6 +157,20 @@ pub enum WordPart {
     VarExpansion(VarExpansion),
     /// Command substitution: $(cmd)
     CommandSubstitution(String),
+    /// Brace expansion: {a,b,c} or {1..5}
+    BraceExpansion(BraceExpansion),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BraceExpansion {
+    /// List: {a,b,c}
+    List(Vec<String>),
+    /// Sequence: {1..10} or {a..z}
+    Sequence {
+        start: String,
+        end: String,
+        increment: Option<i32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
