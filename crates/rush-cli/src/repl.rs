@@ -1,9 +1,11 @@
 use reedline::{DefaultPrompt, Reedline, Signal};
 use rush_expand::Context;
+use rush_interactive::RushHighlighter;
 use std::process::ExitCode;
 
 pub fn run_interactive() -> ExitCode {
-    let mut line_editor = Reedline::create();
+    let mut line_editor = Reedline::create()
+        .with_highlighter(Box::new(RushHighlighter::new()));
     let prompt = DefaultPrompt::default();
     let mut context = Context::new();
 
