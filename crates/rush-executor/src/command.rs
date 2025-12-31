@@ -75,18 +75,34 @@ pub fn execute_command(
         return Err(ExecutionError::EmptyCommand);
     }
 
+    // Expand aliases (only for the command name, not args)
+    let (actual_command, actual_args): (String, Vec<String>) = if let Some(alias_value) = context.aliases.get(command).cloned() {
+        // Parse the alias value to get command and its args
+        let parts: Vec<String> = alias_value.split_whitespace().map(|s| s.to_string()).collect();
+        if parts.is_empty() {
+            (command.to_string(), args.to_vec())
+        } else {
+            let cmd = parts[0].clone();
+            let mut new_args: Vec<String> = parts[1..].to_vec();
+            new_args.extend_from_slice(args);
+            (cmd, new_args)
+        }
+    } else {
+        (command.to_string(), args.to_vec())
+    };
+
     // Check if it's a built-in command
-    if let Some(result) = execute_builtin(command, args, context) {
+    if let Some(result) = execute_builtin(&actual_command, &actual_args, context) {
         return Ok(result);
     }
 
     // Try to find the command in PATH
-    let program_path = find_in_path(command)
-        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command)))?;
+    let program_path = find_in_path(&actual_command)
+        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(&actual_command)))?;
 
     // Build the command
     let mut cmd = Command::new(program_path);
-    cmd.args(args);
+    cmd.args(&actual_args);
 
     // Execute with proper terminal handling
     #[cfg(unix)]
@@ -155,6 +171,8 @@ pub(crate) fn execute_builtin(
                 }
             }
         }
+        "alias" => Some(builtin_alias(args, context)),
+        "unalias" => Some(builtin_unalias(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -187,6 +205,69 @@ fn exit_code_to_result(code: i32) -> ExecutionResult {
         } else {
             error_result()
         }
+    }
+}
+
+/// alias builtin - Manage command aliases
+fn builtin_alias(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // No arguments: list all aliases
+    if args.is_empty() {
+        let mut aliases: Vec<_> = context.aliases.iter().collect();
+        aliases.sort_by_key(|(name, _)| *name);
+        for (name, value) in aliases {
+            println!("alias {}='{}'", name, value);
+        }
+        return success_result();
+    }
+
+    // Process each argument
+    for arg in args {
+        if let Some(eq_pos) = arg.find('=') {
+            // Define alias: name=value
+            let name = &arg[..eq_pos];
+            let value = &arg[eq_pos + 1..];
+            context.aliases.insert(name.to_string(), value.to_string());
+        } else {
+            // Display specific alias
+            match context.aliases.get(arg) {
+                Some(value) => println!("alias {}='{}'", arg, value),
+                None => {
+                    eprintln!("alias: {}: not found", arg);
+                    return error_result();
+                }
+            }
+        }
+    }
+
+    success_result()
+}
+
+/// unalias builtin - Remove command aliases
+fn builtin_unalias(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    if args.is_empty() {
+        eprintln!("unalias: usage: unalias [-a] name [name ...]");
+        return error_result();
+    }
+
+    // Check for -a flag (remove all aliases)
+    if args[0] == "-a" {
+        context.aliases.clear();
+        return success_result();
+    }
+
+    // Remove specified aliases
+    let mut had_error = false;
+    for name in args {
+        if context.aliases.remove(name).is_none() {
+            eprintln!("unalias: {}: not found", name);
+            had_error = true;
+        }
+    }
+
+    if had_error {
+        error_result()
+    } else {
+        success_result()
     }
 }
 

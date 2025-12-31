@@ -228,13 +228,29 @@ pub fn execute_simple_with_redirects(
     let command_name = &expanded[0];
     let args = &expanded[1..];
 
+    // Expand aliases (only for the command name, not args)
+    let (actual_command, actual_args): (String, Vec<String>) = if let Some(alias_value) = context.aliases.get(command_name).cloned() {
+        // Parse the alias value to get command and its args
+        let parts: Vec<String> = alias_value.split_whitespace().map(|s| s.to_string()).collect();
+        if parts.is_empty() {
+            (command_name.to_string(), args.to_vec())
+        } else {
+            let cmd = parts[0].clone();
+            let mut new_args: Vec<String> = parts[1..].to_vec();
+            new_args.extend_from_slice(args);
+            (cmd, new_args)
+        }
+    } else {
+        (command_name.to_string(), args.to_vec())
+    };
+
     // Check if it's a built-in command
-    if let Some(result) = crate::command::execute_builtin(command_name, args, context) {
+    if let Some(result) = crate::command::execute_builtin(&actual_command, &actual_args, context) {
         return Ok(result);
     }
 
     // Check if it's a function
-    if let Some(function_def) = context.functions.get(command_name).cloned() {
+    if let Some(function_def) = context.functions.get(&actual_command).cloned() {
         // TODO: Set up function parameters ($1, $2, etc.)
         // TODO: Create function scope
         // For now, just execute the function body
@@ -250,12 +266,12 @@ pub fn execute_simple_with_redirects(
     }
 
     // Find the command in PATH
-    let program_path = find_in_path(command_name)
-        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
+    let program_path = find_in_path(&actual_command)
+        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(&actual_command)))?;
 
     // Build the command
     let mut command = Command::new(program_path);
-    command.args(args);
+    command.args(&actual_args);
 
     // Apply redirections and get optional stdin content
     let stdin_content = apply_redirects(&mut command, &cmd.redirects, context)

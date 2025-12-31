@@ -17,6 +17,8 @@ pub struct Context {
     pub functions: HashMap<String, rush_parser::ast::FunctionDef>,
     /// Arrays (name -> values)
     pub arrays: HashMap<String, Vec<String>>,
+    /// Command aliases (name -> expansion)
+    pub aliases: HashMap<String, String>,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
@@ -31,6 +33,7 @@ impl Context {
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
+            aliases: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         };
@@ -52,6 +55,7 @@ impl Context {
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
+            aliases: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         }
