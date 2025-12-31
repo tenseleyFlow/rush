@@ -1,7 +1,7 @@
 use clap::Parser;
 use rush_expand::Context;
 use std::fs;
-use std::io::{self, BufRead, IsTerminal};
+use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 mod repl;
@@ -80,26 +80,22 @@ fn execute_file(path: &str) -> ExitCode {
 /// Execute commands from stdin
 fn execute_stdin() -> ExitCode {
     let stdin = io::stdin();
-    let mut context = Context::new();
-    let mut last_exit_code = 0;
+    let mut content = String::new();
 
-    for line in stdin.lock().lines() {
-        match line {
-            Ok(line) => match execute_line(&line, &mut context, false) {
-                Ok(code) => last_exit_code = code,
-                Err(e) => {
-                    eprintln!("rush: {}", e);
-                    last_exit_code = 1;
-                }
-            },
-            Err(e) => {
-                eprintln!("rush: error reading stdin: {}", e);
-                return ExitCode::from(1);
-            }
-        }
+    // Read all of stdin at once to support multi-line control flow
+    if let Err(e) = stdin.lock().read_to_string(&mut content) {
+        eprintln!("rush: error reading stdin: {}", e);
+        return ExitCode::from(1);
     }
 
-    ExitCode::from(last_exit_code as u8)
+    let mut context = Context::new();
+    match execute_line(&content, &mut context, false) {
+        Ok(code) => ExitCode::from(code as u8),
+        Err(e) => {
+            eprintln!("rush: {}", e);
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// Execute a single line of shell input

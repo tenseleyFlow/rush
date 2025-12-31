@@ -12,13 +12,18 @@ input = { SOI ~ ws* ~ command_line ~ ws* ~ trailing_sep ~ ws* ~ EOI }
 command_line = { (complete_command ~ (separator ~ complete_command)* ~ separator?)? }
 
 // Complete command: can be a compound command or an and_or list
+// Don't try to parse closing keywords as commands
 complete_command = {
     if_statement
     | while_statement
     | for_statement
     | case_statement
-    | and_or_list
+    | !closing_keyword ~ and_or_list
 }
+
+// Closing keywords that end control flow blocks
+// Note: ";;" is for case clauses
+closing_keyword = @{ (";;" | "fi" | "done" | "esac" | "elif" | "else") ~ &(ws | NEWLINE | ";" | EOI) }
 
 // And/Or list: pipelines connected by && or ||
 and_or_list = { pipeline ~ (ws* ~ and_or_op ~ ws* ~ pipeline)* }
@@ -32,26 +37,26 @@ pipeline = { simple_command ~ (ws* ~ "|" ~ ws* ~ simple_command)* }
 keyword_boundary = _{ &(ws | NEWLINE | ";" | EOI) }
 
 if_statement = {
-    "if" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator
+    "if" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator?
     ~ elif_clause*
     ~ else_clause?
     ~ "fi" ~ keyword_boundary
 }
 
 elif_clause = {
-    "elif" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator
+    "elif" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "then" ~ keyword_boundary ~ separator ~ command_list ~ separator?
 }
 
 else_clause = {
-    "else" ~ keyword_boundary ~ separator ~ command_list ~ separator
+    "else" ~ keyword_boundary ~ separator ~ command_list ~ separator?
 }
 
 while_statement = {
-    "while" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator ~ "done" ~ keyword_boundary
+    "while" ~ keyword_boundary ~ separator ~ complete_command ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator? ~ "done" ~ keyword_boundary
 }
 
 for_statement = {
-    "for" ~ keyword_boundary ~ ws+ ~ var_name ~ ws+ ~ "in" ~ keyword_boundary ~ (ws+ ~ word)* ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator ~ "done" ~ keyword_boundary
+    "for" ~ keyword_boundary ~ ws+ ~ var_name ~ ws+ ~ "in" ~ keyword_boundary ~ (ws+ ~ word)* ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator? ~ "done" ~ keyword_boundary
 }
 
 case_statement = {
@@ -59,7 +64,7 @@ case_statement = {
 }
 
 case_clause = {
-    ws* ~ pattern ~ (ws* ~ "|" ~ ws* ~ pattern)* ~ ws* ~ ")" ~ separator ~ command_list ~ ws* ~ ";;" ~ separator
+    ws* ~ pattern ~ (ws* ~ "|" ~ ws* ~ pattern)* ~ ws* ~ ")" ~ separator ~ command_list ~ (NEWLINE | ws)* ~ ";;" ~ separator?
 }
 
 pattern = { word }
@@ -68,7 +73,8 @@ pattern = { word }
 command_list = { complete_command ~ (separator ~ complete_command)* }
 
 // Separator: newlines, semicolons, or whitespace
-separator = _{ (ws* ~ (NEWLINE | ";") ~ ws*)+ | ws+ }
+// Don't match ";;" as it's used in case statements
+separator = _{ (ws* ~ (NEWLINE | (!";" ~ ";")) ~ ws*)+ | ws+ }
 
 // Simple command: assignments and/or words, with optional redirections
 // Assignments must come before words (bash convention)
@@ -129,10 +135,10 @@ command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
 keyword = { ("if" | "then" | "elif" | "else" | "fi" | "while" | "do" | "done" | "for" | "in" | "case" | "esac") ~ &(ws | NEWLINE | ";" | EOI) }
 
 // Bare word part: literal text (no special characters)
-// Note: We exclude $, |, &, <, >, ; to handle expansion, pipes, operators, redirects, and separators
+// Note: We exclude $, |, &, <, >, ;, ) to handle expansion, pipes, operators, redirects, separators, and case patterns
 // "=" is allowed in words (needed for test command), assignments use explicit var_name pattern
 // Keywords are reserved and cannot be used as bare words
-bare_word_part = @{ !keyword ~ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">" | ";") ~ ANY)+ }
+bare_word_part = @{ !keyword ~ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">" | ";" | ")") ~ ANY)+ }
 
 // Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }

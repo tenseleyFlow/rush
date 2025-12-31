@@ -870,4 +870,48 @@ mod tests {
             Err(e) => panic!("Parse error: {}", e),
         }
     }
+
+    #[test]
+    fn test_parse_while_loop() {
+        let input = "while false; do echo test; done";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::While(_))) => {}
+            Ok(other) => panic!("Expected While, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_while_loop_multiline() {
+        let input = "while false\ndo\necho test\ndone";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::While(_))) => {}
+            Ok(other) => panic!("Expected While, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_case_simple() {
+        let input = "case x in a) echo matched;; esac";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::Case(_))) => {}
+            Ok(other) => panic!("Expected Case, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_case_two_clauses() {
+        let input = "case x in a) echo first;; b) echo second;; esac";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(CompleteCommand::Case(_))) => {}
+            Ok(other) => panic!("Expected Case, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
 }
