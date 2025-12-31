@@ -137,6 +137,24 @@ pub(crate) fn execute_builtin(
             let exit_code = crate::test_builtin::execute_test(args);
             Some(exit_code_to_result(exit_code))
         }
+        "source" | "." => {
+            match builtin_source(args, context) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    eprintln!("{}: {}", command, err);
+                    Some(error_result())
+                }
+            }
+        }
+        "eval" => {
+            match builtin_eval(args, context) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    eprintln!("eval: {}", err);
+                    Some(error_result())
+                }
+            }
+        }
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -419,6 +437,80 @@ fn builtin_bg(args: &[String], context: &mut rush_expand::Context) -> ExecutionR
     println!("[{}]  {}", job.id, job.command);
 
     success_result()
+}
+
+/// source/. builtin - Execute commands from a file in the current shell context
+fn builtin_source(args: &[String], context: &mut rush_expand::Context) -> Result<ExecutionResult, String> {
+    if args.is_empty() {
+        return Err("filename required".to_string());
+    }
+
+    let filename = &args[0];
+
+    // Read the file
+    let content = std::fs::read_to_string(filename)
+        .map_err(|e| format!("{}: {}", filename, e))?;
+
+    // Parse the entire content as a single unit to handle multiline constructs
+    use rush_parser::parse_line;
+
+    match parse_line(&content) {
+        Ok(statement) => {
+            execute_statement(&statement, context)
+                .map_err(|e| format!("{}: {}", filename, e))
+        }
+        Err(e) => {
+            Err(format!("{}: parse error: {}", filename, e))
+        }
+    }
+}
+
+/// eval builtin - Evaluate arguments as a shell command
+fn builtin_eval(args: &[String], context: &mut rush_expand::Context) -> Result<ExecutionResult, String> {
+    if args.is_empty() {
+        return Ok(success_result());
+    }
+
+    // Join all arguments into a single command string
+    let command = args.join(" ");
+
+    // Parse and execute
+    use rush_parser::parse_line;
+
+    match parse_line(&command) {
+        Ok(statement) => {
+            execute_statement(&statement, context)
+                .map_err(|e| format!("{}", e))
+        }
+        Err(e) => {
+            Err(format!("parse error: {}", e))
+        }
+    }
+}
+
+/// Helper to execute a parsed statement
+fn execute_statement(
+    statement: &rush_parser::Statement,
+    context: &mut rush_expand::Context,
+) -> Result<ExecutionResult, String> {
+    use rush_parser::Statement;
+
+    match statement {
+        Statement::Empty => Ok(success_result()),
+        Statement::Complete(cmd) => {
+            crate::control_flow::execute_complete_command(cmd, context)
+                .map_err(|e| e.to_string())
+        }
+        Statement::Script(commands) => {
+            let mut last_result = success_result();
+            for cmd in commands {
+                last_result = crate::control_flow::execute_complete_command(cmd, context)
+                    .map_err(|e| e.to_string())?;
+                context.set_exit_status(last_result.exit_code());
+            }
+            Ok(last_result)
+        }
+    }
 }
 
 #[cfg(test)]
