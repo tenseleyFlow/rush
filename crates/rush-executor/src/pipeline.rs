@@ -199,22 +199,49 @@ pub fn execute_simple_with_redirects(
     let mut command = Command::new(program_path);
     command.args(args);
 
-    // Apply redirections
-    apply_redirects(&mut command, &cmd.redirects, context)
+    // Apply redirections and get optional stdin content
+    let stdin_content = apply_redirects(&mut command, &cmd.redirects, context)
         .map_err(|e| ExecutionError::IoError(std::io::Error::new(
             std::io::ErrorKind::Other,
             e.to_string(),
         )))?;
 
-    // Execute with proper terminal handling
-    #[cfg(unix)]
-    {
-        crate::terminal::unix::execute_with_terminal_control(command, interactive)
-    }
+    // If we have stdin content (heredoc/herestring), handle it specially
+    if let Some(content) = stdin_content {
+        use std::io::Write;
 
-    #[cfg(not(unix))]
-    {
-        crate::terminal::non_unix::execute_with_terminal_control(command, interactive)
+        // Spawn the command
+        let mut child = command.spawn()
+            .map_err(|e| ExecutionError::IoError(e))?;
+
+        // Write to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(content.as_bytes())
+                .map_err(|e| ExecutionError::IoError(e))?;
+            // Close stdin by dropping it
+            drop(stdin);
+        }
+
+        // Wait for the command to complete
+        let status = child.wait()
+            .map_err(|e| ExecutionError::IoError(e))?;
+
+        Ok(crate::command::ExecutionResult {
+            exit_status: status,
+            #[cfg(unix)]
+            job_control: None,
+        })
+    } else {
+        // No stdin content - execute normally with terminal handling
+        #[cfg(unix)]
+        {
+            crate::terminal::unix::execute_with_terminal_control(command, interactive)
+        }
+
+        #[cfg(not(unix))]
+        {
+            crate::terminal::non_unix::execute_with_terminal_control(command, interactive)
+        }
     }
 }
 
