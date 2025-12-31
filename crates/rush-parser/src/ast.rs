@@ -65,6 +65,15 @@ pub enum Redirect {
     StderrToStdout,
     /// All output: &>file or &>>file
     AllOutput { file: Word, append: bool },
+    /// Here-document: <<DELIMITER or <<-DELIMITER
+    Heredoc {
+        delimiter: String,
+        content: Vec<String>,
+        strip_tabs: bool,
+        expand: bool,
+    },
+    /// Here-string: <<<string
+    Herestring { content: Word },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

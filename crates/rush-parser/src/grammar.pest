@@ -94,10 +94,12 @@ simple_command = {
 assignment = { var_name ~ "=" ~ word }
 var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
-// Redirections: <file, >file, >>file, 2>file, 2>&1, &>file
+// Redirections: <file, >file, >>file, 2>file, 2>&1, &>file, <<EOF, <<<string
 redirect = {
     redirect_stderr_to_stdout  // Must come before others to match 2>&1
     | redirect_all_output       // &>file or &>>file
+    | redirect_herestring       // <<<string (must come before heredoc)
+    | redirect_heredoc          // <<EOF or <<-EOF
     | redirect_output_append    // >>file
     | redirect_output           // >file or N>file
     | redirect_input            // <file
@@ -108,6 +110,15 @@ redirect_output = { fd_number? ~ ">" ~ ws* ~ word }
 redirect_output_append = { fd_number? ~ ">>" ~ ws* ~ word }
 redirect_stderr_to_stdout = { "2>&1" }
 redirect_all_output = { "&>" ~ ">"? ~ ws* ~ word }  // &>file or &>>file
+
+// Heredoc: <<EOF or <<-EOF (content collected separately by parser)
+redirect_heredoc = { "<<" ~ "-"? ~ ws* ~ heredoc_delimiter }
+// Delimiter can be quoted (literal) or unquoted (expand)
+heredoc_delimiter = { quoted_string | bare_delimiter }
+bare_delimiter = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Herestring: <<<string
+redirect_herestring = { "<<<" ~ ws* ~ word }
 
 fd_number = @{ ASCII_DIGIT+ }
 

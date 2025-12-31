@@ -552,6 +552,51 @@ fn parse_redirect(pair: pest::iterators::Pair<Rule>) -> Result<Redirect, ParseEr
                 append,
             })
         }
+        Rule::redirect_heredoc => {
+            // Parse heredoc marker: <<EOF or <<-EOF
+            let text = inner.as_str();
+            let strip_tabs = text.starts_with("<<-");
+
+            let delimiter_pair = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_heredoc))?;
+
+            // Extract delimiter and check if quoted (determines expansion)
+            let (delimiter, expand) = match delimiter_pair.as_rule() {
+                Rule::quoted_string => {
+                    // Quoted delimiter means no expansion
+                    let s = delimiter_pair.as_str();
+                    // Remove quotes
+                    let delim = if s.starts_with('"') || s.starts_with('\'') {
+                        &s[1..s.len()-1]
+                    } else {
+                        s
+                    };
+                    (delim.to_string(), false)
+                }
+                Rule::bare_delimiter => {
+                    // Unquoted delimiter means expand
+                    (delimiter_pair.as_str().to_string(), true)
+                }
+                _ => return Err(ParseError::UnexpectedRule(delimiter_pair.as_rule())),
+            };
+
+            // Content will be collected separately (requires multi-line parsing)
+            Ok(Redirect::Heredoc {
+                delimiter,
+                content: Vec::new(),  // Empty for now
+                strip_tabs,
+                expand,
+            })
+        }
+        Rule::redirect_herestring => {
+            // Parse herestring: <<<word
+            let word = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_herestring))?;
+
+            Ok(Redirect::Herestring {
+                content: parse_word(word)?,
+            })
+        }
         _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
     }
 }

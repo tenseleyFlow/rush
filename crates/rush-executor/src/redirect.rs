@@ -20,22 +20,26 @@ pub enum RedirectError {
 /// Apply redirections to a Command
 ///
 /// This function processes all redirections and configures the Command's stdio accordingly.
+/// Returns optional stdin content for heredocs/herestrings.
 pub fn apply_redirects(
     cmd: &mut Command,
     redirects: &[Redirect],
     context: &Context,
-) -> Result<(), RedirectError> {
+) -> Result<Option<String>, RedirectError> {
+    let mut stdin_content = None;
     for redirect in redirects {
-        apply_single_redirect(cmd, redirect, context)?;
+        if let Some(content) = apply_single_redirect(cmd, redirect, context)? {
+            stdin_content = Some(content);
+        }
     }
-    Ok(())
+    Ok(stdin_content)
 }
 
 fn apply_single_redirect(
     cmd: &mut Command,
     redirect: &Redirect,
     context: &Context,
-) -> Result<(), RedirectError> {
+) -> Result<Option<String>, RedirectError> {
     match redirect {
         Redirect::Input { file } => {
             // Expand the filename
@@ -45,6 +49,7 @@ fn apply_single_redirect(
             // Open file for reading
             let file_handle = File::open(&filename)?;
             cmd.stdin(file_handle);
+            Ok(None)
         }
 
         Redirect::Output { fd, file } => {
@@ -72,6 +77,7 @@ fn apply_single_redirect(
                     return Err(RedirectError::InvalidFileDescriptor(*fd_num));
                 }
             }
+            Ok(None)
         }
 
         Redirect::OutputAppend { fd, file } => {
@@ -99,6 +105,7 @@ fn apply_single_redirect(
                     return Err(RedirectError::InvalidFileDescriptor(*fd_num));
                 }
             }
+            Ok(None)
         }
 
         Redirect::StderrToStdout => {
@@ -106,6 +113,7 @@ fn apply_single_redirect(
             // Note: This is a simplified version. Proper implementation requires
             // using unsafe dup2 system calls to redirect fd 2 to fd 1
             cmd.stderr(Stdio::inherit());
+            Ok(None)
         }
 
         Redirect::AllOutput { file, append } => {
@@ -132,8 +140,49 @@ fn apply_single_redirect(
             // Note: This requires duplicating the file handle
             cmd.stdout(file_handle.try_clone()?);
             cmd.stderr(file_handle);
+            Ok(None)
+        }
+
+        Redirect::Heredoc { delimiter: _, content, strip_tabs, expand } => {
+            // Process heredoc content
+            let mut lines = content.clone();
+
+            // Strip leading tabs if requested
+            if *strip_tabs {
+                lines = lines.iter()
+                    .map(|line| line.trim_start_matches('\t'))
+                    .map(|s| s.to_string())
+                    .collect();
+            }
+
+            // Expand variables if requested
+            if *expand {
+                let expanded_lines: Result<Vec<String>, _> = lines.iter()
+                    .map(|line| {
+                        // Parse each line as a word and expand it
+                        let word = rush_parser::Word::from_literal(line);
+                        rush_expand::expand_word(&word, context)
+                            .map_err(|e| RedirectError::ExpansionError(e.to_string()))
+                    })
+                    .collect();
+                lines = expanded_lines?;
+            }
+
+            // Join lines and return content
+            let input = lines.join("\n");
+            cmd.stdin(Stdio::piped());
+            Ok(Some(input))
+        }
+
+        Redirect::Herestring { content } => {
+            // Expand the content word
+            let mut input = rush_expand::expand_word(content, context)
+                .map_err(|e| RedirectError::ExpansionError(e.to_string()))?;
+
+            // Herestrings add a trailing newline
+            input.push('\n');
+            cmd.stdin(Stdio::piped());
+            Ok(Some(input))
         }
     }
-
-    Ok(())
 }
