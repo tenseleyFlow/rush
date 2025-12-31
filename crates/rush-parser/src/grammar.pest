@@ -99,8 +99,10 @@ simple_command = {
     | redirect ~ (ws* ~ redirect)*
 }
 
-// Variable assignment: NAME=value
-assignment = { var_name ~ "=" ~ word }
+// Variable assignment: NAME=value or NAME[index]=value
+assignment = { var_name ~ array_index? ~ "=" ~ word }
+array_index = { "[" ~ array_subscript ~ "]" }
+array_subscript = @{ (ASCII_DIGIT+ | var_name) }
 var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Redirections: <file, >file, >>file, 2>file, 2>&1, &>file, <<EOF, <<<string
@@ -140,12 +142,20 @@ word_part = {
     | var_expansion
     | arithmetic_expansion
     | command_substitution
+    | array_literal
     | bare_word_part
 }
 
+// Array literal: (elem1 elem2 elem3)
+array_literal = { "(" ~ ws* ~ (word ~ (ws+ ~ word)*)? ~ ws* ~ ")" }
+
 // Variable expansion: $VAR or ${VAR} or ${VAR:-default} or ${#VAR} or ${VAR#pattern} etc.
 var_expansion = {
-    "${" ~ "#" ~ var_name ~ "}"  // ${#VAR} - length
+    "${" ~ "#" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${#arr[@]} - array length
+    | "${" ~ "!" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${!arr[@]} - array indices
+    | "${" ~ "#" ~ var_name ~ "}"  // ${#VAR} - variable length
+    | "${" ~ var_name ~ "[" ~ array_subscript ~ "]" ~ "}"  // ${arr[index]} - array element
+    | "${" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${arr[@]} or ${arr[*]} - all elements
     | "${" ~ var_name ~ var_modifier? ~ "}"  // ${VAR} or ${VAR...}
     | "$" ~ var_name  // $VAR
 }

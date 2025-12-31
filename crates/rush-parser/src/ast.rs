@@ -159,6 +159,8 @@ pub struct FunctionDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
     pub name: String,
+    /// Optional array index for array[index]=value
+    pub index: Option<String>,
     pub value: Word,
 }
 
@@ -180,6 +182,8 @@ pub enum WordPart {
     BraceExpansion(BraceExpansion),
     /// Arithmetic expansion: $((expr))
     ArithmeticExpansion(String),
+    /// Array literal: (one two three)
+    ArrayLiteral(Vec<Word>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +230,16 @@ pub enum VarExpansion {
     LowercaseFirst(String),
     /// Lowercase all: ${VAR,,}
     LowercaseAll(String),
+    /// Array element: ${arr[index]}
+    ArrayElement { name: String, index: String },
+    /// Array all elements (separate words): ${arr[@]}
+    ArrayAll(String),
+    /// Array all elements (single word): ${arr[*]}
+    ArrayStar(String),
+    /// Array length: ${#arr[@]} or ${#arr[*]}
+    ArrayLength(String),
+    /// Array indices: ${!arr[@]}
+    ArrayIndices(String),
 }
 
 impl Pipeline {
@@ -282,7 +296,11 @@ impl Word {
 
 impl Assignment {
     pub fn new(name: String, value: Word) -> Self {
-        Self { name, value }
+        Self { name, index: None, value }
+    }
+
+    pub fn new_array(name: String, index: String, value: Word) -> Self {
+        Self { name, index: Some(index), value }
     }
 }
 

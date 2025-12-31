@@ -159,12 +159,54 @@ pub fn execute_simple_with_redirects(
 ) -> Result<ExecutionResult, ExecutionError> {
     // Process variable assignments
     for assignment in &cmd.assignments {
-        let value = rush_expand::expand_words(&[assignment.value.clone()], context)
-            .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))?;
-        context.set_var(&assignment.name, value.join(" "));
+        // Check if this is an array literal assignment: arr=(one two three)
+        let is_array_literal = assignment.value.parts.iter().any(|part| {
+            matches!(part, rush_parser::ast::WordPart::ArrayLiteral(_))
+        });
+
+        if is_array_literal {
+            // Extract array elements from the ArrayLiteral
+            for part in &assignment.value.parts {
+                if let rush_parser::ast::WordPart::ArrayLiteral(elements) = part {
+                    let mut array_values = Vec::new();
+                    for elem in elements {
+                        let expanded = rush_expand::expand_word(elem, context)
+                            .map_err(|e| ExecutionError::IoError(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                e.to_string(),
+                            )))?;
+                        array_values.push(expanded);
+                    }
+                    context.arrays.insert(assignment.name.clone(), array_values);
+                }
+            }
+        } else if let Some(index) = &assignment.index {
+            // arr[index]=value - indexed array assignment
+            let value = rush_expand::expand_words(&[assignment.value.clone()], context)
+                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )))?;
+            let idx = index.parse::<usize>().unwrap_or(0);
+
+            // Get or create array
+            let array = context.arrays.entry(assignment.name.clone()).or_insert_with(Vec::new);
+
+            // Extend array if necessary
+            if idx >= array.len() {
+                array.resize(idx + 1, String::new());
+            }
+
+            array[idx] = value.join(" ");
+        } else {
+            // Regular variable assignment
+            let value = rush_expand::expand_words(&[assignment.value.clone()], context)
+                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )))?;
+            context.set_var(&assignment.name, value.join(" "));
+        }
     }
 
     // If there's no command to execute (just assignments), return success

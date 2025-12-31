@@ -79,6 +79,14 @@ fn expand_word_simple(word: &Word, context: &Context) -> Result<String, Expansio
                     "Unexpected brace expansion in simple expansion".to_string(),
                 ));
             }
+            WordPart::ArrayLiteral(elements) => {
+                // Array literals like (one two three) expand to space-separated values
+                let mut values = Vec::new();
+                for elem in elements {
+                    values.push(expand_word_simple(elem, context)?);
+                }
+                result.push_str(&values.join(" "));
+            }
         }
     }
 
@@ -168,6 +176,48 @@ fn expand_var(var_exp: &VarExpansion, context: &Context) -> Result<String, Expan
             // ${VAR,,} - lowercase all characters
             let value = context.get_var(name).unwrap_or("");
             Ok(value.to_lowercase())
+        }
+        VarExpansion::ArrayElement { name, index } => {
+            // ${arr[index]} - get array element at index
+            if let Some(array) = context.arrays.get(name) {
+                let idx = index.parse::<usize>().unwrap_or(0);
+                Ok(array.get(idx).cloned().unwrap_or_default())
+            } else {
+                Ok(String::new())
+            }
+        }
+        VarExpansion::ArrayAll(name) => {
+            // ${arr[@]} - all elements as separate words
+            if let Some(array) = context.arrays.get(name) {
+                Ok(array.join(" "))
+            } else {
+                Ok(String::new())
+            }
+        }
+        VarExpansion::ArrayStar(name) => {
+            // ${arr[*]} - all elements as single word
+            if let Some(array) = context.arrays.get(name) {
+                Ok(array.join(" "))
+            } else {
+                Ok(String::new())
+            }
+        }
+        VarExpansion::ArrayLength(name) => {
+            // ${#arr[@]} - number of elements in array
+            if let Some(array) = context.arrays.get(name) {
+                Ok(array.len().to_string())
+            } else {
+                Ok("0".to_string())
+            }
+        }
+        VarExpansion::ArrayIndices(name) => {
+            // ${!arr[@]} - array indices
+            if let Some(array) = context.arrays.get(name) {
+                let indices: Vec<String> = (0..array.len()).map(|i| i.to_string()).collect();
+                Ok(indices.join(" "))
+            } else {
+                Ok(String::new())
+            }
         }
     }
 }

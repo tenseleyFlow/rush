@@ -186,12 +186,21 @@ fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleComma
 
 fn parse_assignment(pair: pest::iterators::Pair<Rule>) -> Result<Assignment, ParseError> {
     let mut name = String::new();
+    let mut index = None;
     let mut value = Word::new(vec![]);
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::var_name => {
                 name = inner_pair.as_str().to_string();
+            }
+            Rule::array_index => {
+                // Extract the index from the brackets
+                for idx_pair in inner_pair.into_inner() {
+                    if idx_pair.as_rule() == Rule::array_subscript {
+                        index = Some(idx_pair.as_str().to_string());
+                    }
+                }
             }
             Rule::word => {
                 value = parse_word(inner_pair)?;
@@ -200,7 +209,11 @@ fn parse_assignment(pair: pest::iterators::Pair<Rule>) -> Result<Assignment, Par
         }
     }
 
-    Ok(Assignment::new(name, value))
+    if let Some(idx) = index {
+        Ok(Assignment::new_array(name, idx, value))
+    } else {
+        Ok(Assignment::new(name, value))
+    }
 }
 
 fn parse_word(pair: pest::iterators::Pair<Rule>) -> Result<Word, ParseError> {
@@ -247,6 +260,15 @@ fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, P
         Rule::quoted_string => {
             parse_quoted_string(inner)
         }
+        Rule::array_literal => {
+            let mut elements = Vec::new();
+            for elem_pair in inner.into_inner() {
+                if elem_pair.as_rule() == Rule::word {
+                    elements.push(parse_word(elem_pair)?);
+                }
+            }
+            Ok(vec![WordPart::ArrayLiteral(elements)])
+        }
         _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
     }
 }
@@ -256,7 +278,27 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
     let original = pair.as_str();
     let is_braced = original.starts_with("${");
 
-    // Check for ${#VAR} - length expansion
+    // Check for ${#arr[@]} or ${#arr[*]} - array length
+    if original.starts_with("${#") && (original.contains("[@]") || original.contains("[*]")) {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ArrayLength(var_name));
+    }
+
+    // Check for ${!arr[@]} or ${!arr[*]} - array indices
+    if original.starts_with("${!") {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ArrayIndices(var_name));
+    }
+
+    // Check for ${#VAR} - variable length
     if original.starts_with("${#") {
         let mut inner = pair.into_inner();
         let var_name = inner.next()
@@ -264,6 +306,40 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
             .as_str()
             .to_string();
         return Ok(VarExpansion::Length(var_name));
+    }
+
+    // Check for ${arr[@]} - all elements
+    if original.contains("[@]") {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ArrayAll(var_name));
+    }
+
+    // Check for ${arr[*]} - all elements as single word
+    if original.contains("[*]") {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ArrayStar(var_name));
+    }
+
+    // Check for ${arr[index]} - array element
+    if original.contains('[') && original.contains(']') {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        let index = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ArrayElement { name: var_name, index });
     }
 
     let mut inner = pair.into_inner();
