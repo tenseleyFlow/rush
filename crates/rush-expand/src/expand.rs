@@ -362,7 +362,7 @@ fn lowercase_first(value: &str) -> String {
 }
 
 /// Expand multiple words (e.g., command arguments)
-/// Each word may expand into multiple words due to brace expansion
+/// Each word may expand into multiple words due to brace expansion and glob expansion
 pub fn expand_words(words: &[Word], context: &Context) -> Result<Vec<String>, ExpansionError> {
     let mut results = Vec::new();
     for word in words {
@@ -370,8 +370,21 @@ pub fn expand_words(words: &[Word], context: &Context) -> Result<Vec<String>, Ex
         let word_with_braces = detect_brace_patterns(word);
 
         // Then expand the word (which may produce multiple results due to braces)
-        let mut expanded = expand_word_with_braces(&word_with_braces, context)?;
-        results.append(&mut expanded);
+        let expanded = expand_word_with_braces(&word_with_braces, context)?;
+
+        // Finally, apply glob expansion to each expanded word
+        for expanded_word in expanded {
+            let glob_options = crate::glob::GlobOptions::default();
+            match crate::glob::expand_glob(&expanded_word, &glob_options) {
+                Ok(mut glob_results) => {
+                    results.append(&mut glob_results);
+                }
+                Err(_) => {
+                    // If glob expansion fails, use the literal word
+                    results.push(expanded_word);
+                }
+            }
+        }
     }
     Ok(results)
 }
