@@ -74,7 +74,7 @@ command_list = { complete_command ~ (separator ~ complete_command)* }
 
 // Separator: newlines, semicolons, or whitespace
 // Don't match ";;" as it's used in case statements
-separator = _{ (ws* ~ (NEWLINE | (!";" ~ ";")) ~ ws*)+ | ws+ }
+separator = _{ (ws* ~ (NEWLINE | (";" ~ !";")) ~ ws*)+ | ws+ }
 
 // Simple command: assignments and/or words, with optional redirections
 // Assignments must come before words (bash convention)

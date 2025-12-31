@@ -184,7 +184,7 @@ pub fn execute_simple_with_redirects(
     let args = &expanded[1..];
 
     // Check if it's a built-in command
-    if let Some(result) = crate::command::execute_builtin(command_name, args) {
+    if let Some(result) = crate::command::execute_builtin(command_name, args, context) {
         return Ok(result);
     }
 

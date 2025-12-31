@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::env;
 
+#[cfg(unix)]
+use rush_job::JobList;
+
 /// Execution context holding shell variables and state
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Context {
     /// Shell variables (local and environment)
     variables: HashMap<String, String>,
@@ -10,6 +13,9 @@ pub struct Context {
     exported: HashMap<String, String>,
     /// Exit status of last command
     pub last_exit_status: i32,
+    /// Job list for job control (unix only)
+    #[cfg(unix)]
+    pub job_list: JobList,
 }
 
 impl Context {
@@ -19,6 +25,8 @@ impl Context {
             variables: HashMap::new(),
             exported: HashMap::new(),
             last_exit_status: 0,
+            #[cfg(unix)]
+            job_list: JobList::new(nix::unistd::getpgrp()),
         };
 
         // Initialize with environment variables
@@ -36,6 +44,8 @@ impl Context {
             variables: HashMap::new(),
             exported: HashMap::new(),
             last_exit_status: 0,
+            #[cfg(unix)]
+            job_list: JobList::new(nix::unistd::getpgrp()),
         }
     }
 

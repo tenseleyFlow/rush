@@ -44,13 +44,14 @@ pub fn execute_command(
     command: &str,
     args: &[String],
     interactive: bool,
+    context: &mut rush_expand::Context,
 ) -> Result<ExecutionResult, ExecutionError> {
     if command.is_empty() {
         return Err(ExecutionError::EmptyCommand);
     }
 
     // Check if it's a built-in command
-    if let Some(result) = execute_builtin(command, args) {
+    if let Some(result) = execute_builtin(command, args, context) {
         return Ok(result);
     }
 
@@ -75,7 +76,11 @@ pub fn execute_command(
 }
 
 /// Execute built-in commands
-pub(crate) fn execute_builtin(command: &str, args: &[String]) -> Option<ExecutionResult> {
+pub(crate) fn execute_builtin(
+    command: &str,
+    args: &[String],
+    context: &mut rush_expand::Context,
+) -> Option<ExecutionResult> {
     match command {
         "exit" => {
             let code = args.first()
@@ -107,24 +112,15 @@ pub(crate) fn execute_builtin(command: &str, args: &[String]) -> Option<Executio
             let exit_code = crate::test_builtin::execute_test(args);
             Some(exit_code_to_result(exit_code))
         }
-        "jobs" => {
-            // TODO: Implement jobs builtin - list all jobs
-            // Will need access to JobList from shell context
-            eprintln!("jobs: not yet implemented");
-            Some(success_result())
-        }
-        "fg" => {
-            // TODO: Implement fg builtin - bring job to foreground
-            // Usage: fg [job_id]
-            // Will need access to JobList and terminal control
-            eprintln!("fg: not yet implemented");
-            Some(error_result())
-        }
-        "bg" => {
-            // TODO: Implement bg builtin - continue job in background
-            // Usage: bg [job_id]
-            // Will need access to JobList
-            eprintln!("bg: not yet implemented");
+        #[cfg(unix)]
+        "jobs" => Some(builtin_jobs(context)),
+        #[cfg(unix)]
+        "fg" => Some(builtin_fg(args, context)),
+        #[cfg(unix)]
+        "bg" => Some(builtin_bg(args, context)),
+        #[cfg(not(unix))]
+        "jobs" | "fg" | "bg" => {
+            eprintln!("{}: job control not supported on this platform", command);
             Some(error_result())
         }
         _ => None,
@@ -213,6 +209,190 @@ fn is_executable(_path: &PathBuf) -> bool {
     true
 }
 
+// Job control builtins (Unix only)
+
+#[cfg(unix)]
+fn builtin_jobs(context: &mut rush_expand::Context) -> ExecutionResult {
+    // List all jobs in sorted order
+    for job in context.job_list.jobs_sorted() {
+        println!("[{}]  {}  {}", job.id, job.status_string(), job.command);
+    }
+
+    success_result()
+}
+
+#[cfg(unix)]
+fn builtin_fg(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    use nix::sys::signal::{kill, Signal};
+    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+    use rush_job::{give_terminal_to, JobState};
+
+    // Parse job ID argument (default to most recent job)
+    let job_id = if let Some(arg) = args.first() {
+        match arg.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                eprintln!("fg: invalid job id: {}", arg);
+                return error_result();
+            }
+        }
+    } else {
+        // Get most recent job
+        match context.job_list.current_job() {
+            Some(job) => job.id,
+            None => {
+                eprintln!("fg: no current job");
+                return error_result();
+            }
+        }
+    };
+
+    // Get the job's pgid before we mutate the job
+    let (pgid, command, is_stopped) = {
+        let job = match context.job_list.get_job(job_id) {
+            Some(job) => job,
+            None => {
+                eprintln!("fg: job {} not found", job_id);
+                return error_result();
+            }
+        };
+        (job.pgid, job.command.clone(), job.is_stopped())
+    };
+
+    // If the job is stopped, send SIGCONT to resume it
+    if is_stopped {
+        if let Err(e) = kill(pgid, Signal::SIGCONT) {
+            eprintln!("fg: failed to continue job: {}", e);
+            return error_result();
+        }
+    }
+
+    // Give terminal control to the job
+    if let Err(e) = give_terminal_to(pgid) {
+        eprintln!("fg: failed to give terminal control: {}", e);
+        return error_result();
+    }
+
+    // Update job state
+    if let Some(job) = context.job_list.get_job_mut(job_id) {
+        job.state = JobState::Running;
+    }
+    println!("{}", command);
+
+    // Wait for the job to complete or stop (wait on the process group leader)
+    loop {
+        match waitpid(pgid, Some(WaitPidFlag::WUNTRACED)) {
+            Ok(WaitStatus::Exited(_, code)) => {
+                if let Some(job) = context.job_list.get_job_mut(job_id) {
+                    job.state = JobState::Done(code);
+                }
+
+                // Restore terminal to shell
+                if let Err(e) = rush_job::restore_shell_terminal(nix::unistd::getpgrp()) {
+                    eprintln!("fg: failed to restore terminal: {}", e);
+                }
+
+                return exit_code_to_result(code);
+            }
+            Ok(WaitStatus::Signaled(_, sig, _)) => {
+                let exit_code = 128 + sig as i32;
+                if let Some(job) = context.job_list.get_job_mut(job_id) {
+                    job.state = JobState::Done(exit_code);
+                }
+
+                // Restore terminal to shell
+                if let Err(e) = rush_job::restore_shell_terminal(nix::unistd::getpgrp()) {
+                    eprintln!("fg: failed to restore terminal: {}", e);
+                }
+
+                return exit_code_to_result(exit_code);
+            }
+            Ok(WaitStatus::Stopped(_, _)) => {
+                if let Some(job) = context.job_list.get_job_mut(job_id) {
+                    job.state = JobState::Stopped;
+                }
+
+                // Restore terminal to shell
+                if let Err(e) = rush_job::restore_shell_terminal(nix::unistd::getpgrp()) {
+                    eprintln!("fg: failed to restore terminal: {}", e);
+                }
+
+                return success_result();
+            }
+            Err(e) => {
+                eprintln!("fg: wait failed: {}", e);
+
+                // Restore terminal to shell
+                if let Err(e) = rush_job::restore_shell_terminal(nix::unistd::getpgrp()) {
+                    eprintln!("fg: failed to restore terminal: {}", e);
+                }
+
+                return error_result();
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn builtin_bg(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    use nix::sys::signal::{kill, Signal};
+    use rush_job::JobState;
+
+    // Parse job ID argument (default to most recent stopped job)
+    let job_id = if let Some(arg) = args.first() {
+        match arg.parse::<u32>() {
+            Ok(id) => id,
+            Err(_) => {
+                eprintln!("bg: invalid job id: {}", arg);
+                return error_result();
+            }
+        }
+    } else {
+        // Get most recent stopped job
+        match context
+            .job_list
+            .jobs()
+            .filter(|j| j.is_stopped())
+            .max_by_key(|j| j.id)
+        {
+            Some(job) => job.id,
+            None => {
+                eprintln!("bg: no stopped job");
+                return error_result();
+            }
+        }
+    };
+
+    // Get the job
+    let job = match context.job_list.get_job_mut(job_id) {
+        Some(job) => job,
+        None => {
+            eprintln!("bg: job {} not found", job_id);
+            return error_result();
+        }
+    };
+
+    // Job must be stopped
+    if !job.is_stopped() {
+        eprintln!("bg: job {} is not stopped", job_id);
+        return error_result();
+    }
+
+    // Send SIGCONT to resume the job in the background
+    let pgid = job.pgid;
+    if let Err(e) = kill(pgid, Signal::SIGCONT) {
+        eprintln!("bg: failed to continue job: {}", e);
+        return error_result();
+    }
+
+    // Update job state
+    job.state = JobState::Running;
+    println!("[{}]  {}", job.id, job.command);
+
+    success_result()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,7 +406,8 @@ mod tests {
 
     #[test]
     fn test_command_not_found() {
-        let result = execute_command("nonexistent_command_12345", &[]);
+        let mut context = rush_expand::Context::empty();
+        let result = execute_command("nonexistent_command_12345", &[], false, &mut context);
         assert!(result.is_err());
     }
 }

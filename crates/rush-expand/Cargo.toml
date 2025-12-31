@@ -8,9 +8,11 @@ repository.workspace = true
 
 [dependencies]
 rush-parser = { path = "../rush-parser" }
+rush-job = { path = "../rush-job" }
 globset = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
+nix = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
