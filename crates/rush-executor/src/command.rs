@@ -173,6 +173,7 @@ pub(crate) fn execute_builtin(
         }
         "alias" => Some(builtin_alias(args, context)),
         "unalias" => Some(builtin_unalias(args, context)),
+        "trap" => Some(builtin_trap(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -260,6 +261,129 @@ fn builtin_unalias(args: &[String], context: &mut rush_expand::Context) -> Execu
     for name in args {
         if context.aliases.remove(name).is_none() {
             eprintln!("unalias: {}: not found", name);
+            had_error = true;
+        }
+    }
+
+    if had_error {
+        error_result()
+    } else {
+        success_result()
+    }
+}
+
+/// Normalize signal name (SIGINT, INT, 2 all -> INT)
+fn normalize_signal_name(sig: &str) -> Option<String> {
+    // Special trap signals
+    match sig.to_uppercase().as_str() {
+        "EXIT" | "0" => return Some("EXIT".to_string()),
+        "ERR" => return Some("ERR".to_string()),
+        "DEBUG" => return Some("DEBUG".to_string()),
+        "RETURN" => return Some("RETURN".to_string()),
+        _ => {}
+    }
+
+    // Regular signals - strip SIG prefix if present
+    let name = sig.to_uppercase();
+    let name = name.strip_prefix("SIG").unwrap_or(&name);
+
+    // Map common signal names/numbers
+    match name {
+        "HUP" | "1" => Some("HUP".to_string()),
+        "INT" | "2" => Some("INT".to_string()),
+        "QUIT" | "3" => Some("QUIT".to_string()),
+        "ABRT" | "6" => Some("ABRT".to_string()),
+        "KILL" | "9" => Some("KILL".to_string()),
+        "ALRM" | "14" => Some("ALRM".to_string()),
+        "TERM" | "15" => Some("TERM".to_string()),
+        "USR1" | "10" => Some("USR1".to_string()),
+        "USR2" | "12" => Some("USR2".to_string()),
+        "CHLD" | "CHILD" | "17" => Some("CHLD".to_string()),
+        "CONT" | "18" => Some("CONT".to_string()),
+        "STOP" | "19" => Some("STOP".to_string()),
+        "TSTP" | "20" => Some("TSTP".to_string()),
+        "TTIN" | "21" => Some("TTIN".to_string()),
+        "TTOU" | "22" => Some("TTOU".to_string()),
+        _ => None,
+    }
+}
+
+/// trap builtin - Set or display signal handlers
+fn builtin_trap(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // No arguments: list all traps
+    if args.is_empty() {
+        let mut traps: Vec<_> = context.traps.iter().collect();
+        traps.sort_by_key(|(sig, _)| *sig);
+        for (signal, command) in traps {
+            if command.is_empty() {
+                println!("trap -- '' {}", signal);
+            } else {
+                println!("trap -- '{}' {}", command, signal);
+            }
+        }
+        return success_result();
+    }
+
+    // Handle -p flag (print traps)
+    if args[0] == "-p" {
+        if args.len() == 1 {
+            // Print all traps
+            let mut traps: Vec<_> = context.traps.iter().collect();
+            traps.sort_by_key(|(sig, _)| *sig);
+            for (signal, command) in traps {
+                if command.is_empty() {
+                    println!("trap -- '' {}", signal);
+                } else {
+                    println!("trap -- '{}' {}", command, signal);
+                }
+            }
+        } else {
+            // Print specific traps
+            for sig in &args[1..] {
+                if let Some(normalized) = normalize_signal_name(sig) {
+                    if let Some(command) = context.traps.get(&normalized) {
+                        if command.is_empty() {
+                            println!("trap -- '' {}", normalized);
+                        } else {
+                            println!("trap -- '{}' {}", command, normalized);
+                        }
+                    }
+                }
+            }
+        }
+        return success_result();
+    }
+
+    // Handle -l flag (list signal names)
+    if args[0] == "-l" {
+        println!(" 1) HUP\t 2) INT\t 3) QUIT\t 6) ABRT\t 9) KILL");
+        println!("10) USR1\t12) USR2\t14) ALRM\t15) TERM\t17) CHLD");
+        println!("18) CONT\t19) STOP\t20) TSTP\t21) TTIN\t22) TTOU");
+        return success_result();
+    }
+
+    // trap COMMAND SIGNAL...
+    let command = &args[0];
+    let signals = &args[1..];
+
+    if signals.is_empty() {
+        eprintln!("trap: usage: trap [-lp] [[arg] signal_spec ...]");
+        return error_result();
+    }
+
+    // Check if we're clearing traps (trap - SIGNAL)
+    let clearing = command == "-";
+
+    let mut had_error = false;
+    for sig in signals {
+        if let Some(normalized) = normalize_signal_name(sig) {
+            if clearing {
+                context.traps.remove(&normalized);
+            } else {
+                context.traps.insert(normalized, command.clone());
+            }
+        } else {
+            eprintln!("trap: {}: invalid signal specification", sig);
             had_error = true;
         }
     }

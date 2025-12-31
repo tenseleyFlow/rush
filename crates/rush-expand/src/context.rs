@@ -19,6 +19,8 @@ pub struct Context {
     pub arrays: HashMap<String, Vec<String>>,
     /// Command aliases (name -> expansion)
     pub aliases: HashMap<String, String>,
+    /// Signal traps (signal name/number -> command)
+    pub traps: HashMap<String, String>,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
@@ -34,6 +36,7 @@ impl Context {
             functions: HashMap::new(),
             arrays: HashMap::new(),
             aliases: HashMap::new(),
+            traps: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         };
@@ -56,6 +59,7 @@ impl Context {
             functions: HashMap::new(),
             arrays: HashMap::new(),
             aliases: HashMap::new(),
+            traps: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         }
