@@ -1,6 +1,6 @@
 use reedline::{DefaultHinter, DefaultPrompt, FileBackedHistory, Reedline, Signal};
 use rush_expand::Context;
-use rush_interactive::RushHighlighter;
+use rush_interactive::{RushCompleter, RushHighlighter};
 use std::process::ExitCode;
 
 pub fn run_interactive() -> ExitCode {
@@ -21,7 +21,8 @@ pub fn run_interactive() -> ExitCode {
         .with_hinter(Box::new(
             DefaultHinter::default()
                 .with_style(nu_ansi_term::Style::new().fg(nu_ansi_term::Color::DarkGray))
-        ));
+        ))
+        .with_completer(Box::new(RushCompleter::new()));
 
     // Add history if we successfully created it
     if let Some(history) = history_file {
