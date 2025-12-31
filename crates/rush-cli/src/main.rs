@@ -130,7 +130,12 @@ fn execute_complete_command(
     };
     use rush_parser::ast::CommandType;
 
-    // TODO: Handle background execution (cmd.background)
+    // Handle background execution
+    if cmd.background {
+        return execute_background_command(cmd, context);
+    }
+
+    // Foreground execution (normal case)
     match &cmd.command {
         CommandType::Simple(simple_cmd) => {
             let exit_code = execute_simple_with_redirects(simple_cmd, context, interactive)
@@ -189,6 +194,69 @@ fn execute_complete_command(
             Ok(exit_code)
         }
     }
+}
+
+/// Execute a command in the background
+#[cfg(unix)]
+fn execute_background_command(
+    cmd: &rush_parser::CompleteCommand,
+    context: &mut Context,
+) -> Result<i32, String> {
+    use rush_executor::{execute_pipeline_background, execute_simple_background};
+    use rush_parser::ast::CommandType;
+
+    match &cmd.command {
+        CommandType::Simple(simple_cmd) => {
+            // Execute in background
+            let (pid, pgid, command_string) = execute_simple_background(simple_cmd, context)
+                .map_err(|e| e.to_string())?;
+
+            // Add to job list
+            let job_id = context.job_list.add_job(
+                pgid,
+                command_string.clone(),
+                vec![pid],
+                false, // not foreground
+            );
+
+            // Print job notification
+            println!("[{}] {}", job_id, pid);
+
+            // Background jobs return success immediately
+            Ok(0)
+        }
+        CommandType::Pipeline(pipeline) => {
+            // Execute pipeline in background
+            let (pids, pgid, command_string) = execute_pipeline_background(pipeline, context)
+                .map_err(|e| e.to_string())?;
+
+            // Add to job list
+            let job_id = context.job_list.add_job(
+                pgid,
+                command_string.clone(),
+                pids.clone(),
+                false, // not foreground
+            );
+
+            // Print job notification (show last PID in pipeline)
+            println!("[{}] {}", job_id, pids.last().unwrap());
+
+            // Background jobs return success immediately
+            Ok(0)
+        }
+        _ => {
+            // Control flow commands in background not yet supported
+            Err("Background execution of control flow commands not yet supported".to_string())
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn execute_background_command(
+    _cmd: &rush_parser::CompleteCommand,
+    _context: &mut Context,
+) -> Result<i32, String> {
+    Err("Background execution not supported on this platform".to_string())
 }
 
 // Make execute_line available to the repl module
