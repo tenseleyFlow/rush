@@ -77,8 +77,8 @@ pattern = { word }
 
 // Function definition: function name { body; } or name() { body; }
 function_definition = {
-    "function" ~ keyword_boundary ~ ws+ ~ function_name ~ ws* ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
-    | function_name ~ ws* ~ "(" ~ ws* ~ ")" ~ ws* ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
+    "function" ~ keyword_boundary ~ ws+ ~ function_name ~ separator? ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
+    | function_name ~ ws* ~ "(" ~ ws* ~ ")" ~ separator? ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
 }
 
 function_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }

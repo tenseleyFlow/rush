@@ -110,20 +110,97 @@ fn execute_file(path: &str) -> ExitCode {
 
     let mut context = Context::new();
 
-    // Split into lines for heredoc support
+    // Split into lines for heredoc support and multiline statements
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-    let mut lines_iter = lines.into_iter();
+    let mut lines_iter = lines.into_iter().peekable();
 
     let mut last_exit_code = 0;
 
-    // Execute line-by-line with heredoc support
-    while let Some(line) = lines_iter.next() {
-        // Skip empty lines and comments
-        if line.trim().is_empty() || line.trim().starts_with('#') {
+    // Accumulate complete statements before execution
+    while lines_iter.peek().is_some() {
+        // Accumulate lines until we have a complete statement
+        let mut statement_lines = Vec::new();
+
+        // Skip leading empty lines and comments
+        while let Some(line) = lines_iter.peek() {
+            if line.trim().is_empty() || line.trim().starts_with('#') {
+                lines_iter.next();
+            } else {
+                break;
+            }
+        }
+
+        if lines_iter.peek().is_none() {
+            break;
+        }
+
+        // Accumulate lines until statement is complete (balanced braces)
+        let mut brace_depth = 0;
+        let mut in_single_quote = false;
+        let mut in_double_quote = false;
+        let mut saw_opening_brace = false;
+
+        loop {
+            let line = match lines_iter.next() {
+                Some(l) => l,
+                None => break,
+            };
+
+            // Track brace depth (ignoring braces in strings)
+            let mut chars = line.chars().peekable();
+            let mut escaped = false;
+
+            while let Some(ch) = chars.next() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+
+                match ch {
+                    '\\' => escaped = true,
+                    '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+                    '"' if !in_single_quote => in_double_quote = !in_double_quote,
+                    '{' if !in_single_quote && !in_double_quote => {
+                        brace_depth += 1;
+                        saw_opening_brace = true;
+                    }
+                    '}' if !in_single_quote && !in_double_quote => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+
+            statement_lines.push(line);
+
+            // Check if statement is complete
+            // - Must have balanced braces (depth 0)
+            // - If line ends with ), we need to see { on a following line
+            // - If line starts with "function" but no {, we need to see { on a following line
+            let trimmed = statement_lines.last().unwrap().trim();
+            let ends_with_paren = trimmed.ends_with(')') && !trimmed.contains('{');
+            let is_function_without_brace = trimmed.starts_with("function ") && !trimmed.contains('{');
+
+            if brace_depth == 0 && !statement_lines.is_empty() {
+                // If last line ends with ), wait for the opening brace
+                if ends_with_paren && !saw_opening_brace {
+                    continue;
+                }
+                // If line starts with "function" but no brace, wait for it
+                if is_function_without_brace && !saw_opening_brace {
+                    continue;
+                }
+                break;
+            }
+        }
+
+        if statement_lines.is_empty() {
             continue;
         }
 
-        match execute_statement_with_heredocs(&line, &mut lines_iter, &mut context, false) {
+        // Join the accumulated lines
+        let statement = statement_lines.join("\n");
+
+        // Execute the complete statement with heredoc support
+        match execute_statement_with_heredocs(&statement, &mut lines_iter, &mut context, false) {
             Ok(code) => last_exit_code = code,
             Err(e) => {
                 eprintln!("rush: {}", e);
