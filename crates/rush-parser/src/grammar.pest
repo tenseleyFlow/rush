@@ -12,14 +12,19 @@ input = { SOI ~ ws* ~ command_line ~ ws* ~ trailing_sep ~ ws* ~ EOI }
 command_line = { (complete_command ~ (separator ~ complete_command)* ~ separator?)? }
 
 // Complete command: can be a compound command or an and_or list
+// Can optionally be run in background with &
 // Don't try to parse closing keywords as commands
 complete_command = {
-    if_statement
+    (if_statement
     | while_statement
     | for_statement
     | case_statement
-    | !closing_keyword ~ and_or_list
+    | !closing_keyword ~ and_or_list)
+    ~ background_marker?
 }
+
+// Background execution marker
+background_marker = { ws* ~ "&" }
 
 // Closing keywords that end control flow blocks
 // Note: ";;" is for case clauses

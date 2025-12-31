@@ -120,28 +120,19 @@ fn execute_complete_command(
     cmd: &CompleteCommand,
     context: &mut Context,
 ) -> Result<ExecutionResult, PipelineError> {
-    match cmd {
-        CompleteCommand::Simple(simple_cmd) => {
+    use rush_parser::ast::CommandType;
+
+    // TODO: Handle background execution (cmd.background)
+    match &cmd.command {
+        CommandType::Simple(simple_cmd) => {
             Ok(crate::execute_simple_with_redirects(simple_cmd, context, false)?)
         }
-        CompleteCommand::Pipeline(pipeline) => {
-            crate::execute_pipeline(pipeline, context)
-        }
-        CompleteCommand::AndOrList(and_or_list) => {
-            crate::execute_and_or_list(and_or_list, context)
-        }
-        CompleteCommand::If(if_stmt) => {
-            execute_if(if_stmt, context)
-        }
-        CompleteCommand::While(while_stmt) => {
-            execute_while(while_stmt, context)
-        }
-        CompleteCommand::For(for_stmt) => {
-            execute_for(for_stmt, context)
-        }
-        CompleteCommand::Case(case_stmt) => {
-            execute_case(case_stmt, context)
-        }
+        CommandType::Pipeline(pipeline) => crate::execute_pipeline(pipeline, context),
+        CommandType::AndOrList(and_or_list) => crate::execute_and_or_list(and_or_list, context),
+        CommandType::If(if_stmt) => execute_if(if_stmt, context),
+        CommandType::While(while_stmt) => execute_while(while_stmt, context),
+        CommandType::For(for_stmt) => execute_for(for_stmt, context),
+        CommandType::Case(case_stmt) => execute_case(case_stmt, context),
     }
 }
 

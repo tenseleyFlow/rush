@@ -3,9 +3,9 @@ use pest_derive::Parser;
 use thiserror::Error;
 
 use crate::ast::{
-    AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CompleteCommand, ElifClause,
-    ForStatement, IfStatement, Pipeline, Redirect, SimpleCommand, Statement, VarExpansion,
-    WhileStatement, Word, WordPart,
+    AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CommandType, CompleteCommand,
+    ElifClause, ForStatement, IfStatement, Pipeline, Redirect, SimpleCommand, Statement,
+    VarExpansion, WhileStatement, Word, WordPart,
 };
 
 #[derive(Parser)]
@@ -73,21 +73,30 @@ fn parse_command_line(pair: pest::iterators::Pair<Rule>) -> Result<Statement, Pa
 }
 
 fn parse_complete_command(pair: pest::iterators::Pair<Rule>) -> Result<CompleteCommand, ParseError> {
-    let inner = pair.into_inner().next().ok_or_else(|| {
+    let mut inner_pairs = pair.into_inner();
+    let command_pair = inner_pairs.next().ok_or_else(|| {
         ParseError::UnexpectedRule(Rule::complete_command)
     })?;
 
-    match inner.as_rule() {
-        Rule::if_statement => Ok(CompleteCommand::If(parse_if_statement(inner)?)),
-        Rule::while_statement => Ok(CompleteCommand::While(parse_while_statement(inner)?)),
-        Rule::for_statement => Ok(CompleteCommand::For(parse_for_statement(inner)?)),
-        Rule::case_statement => Ok(CompleteCommand::Case(parse_case_statement(inner)?)),
-        Rule::and_or_list => parse_and_or_list(inner),
-        _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
-    }
+    // Check for background marker
+    let background = inner_pairs
+        .next()
+        .map(|p| p.as_rule() == Rule::background_marker)
+        .unwrap_or(false);
+
+    let command = match command_pair.as_rule() {
+        Rule::if_statement => CommandType::If(parse_if_statement(command_pair)?),
+        Rule::while_statement => CommandType::While(parse_while_statement(command_pair)?),
+        Rule::for_statement => CommandType::For(parse_for_statement(command_pair)?),
+        Rule::case_statement => CommandType::Case(parse_case_statement(command_pair)?),
+        Rule::and_or_list => parse_and_or_list_type(command_pair)?,
+        _ => return Err(ParseError::UnexpectedRule(command_pair.as_rule())),
+    };
+
+    Ok(CompleteCommand::new(command, background))
 }
 
-fn parse_and_or_list(pair: pest::iterators::Pair<Rule>) -> Result<CompleteCommand, ParseError> {
+fn parse_and_or_list_type(pair: pest::iterators::Pair<Rule>) -> Result<CommandType, ParseError> {
     let mut pipelines = Vec::new();
     let mut operators = Vec::new();
 
@@ -113,11 +122,11 @@ fn parse_and_or_list(pair: pest::iterators::Pair<Rule>) -> Result<CompleteComman
         let pipeline = pipelines.into_iter().next().unwrap();
         // If it's a single-command pipeline, return as Simple
         if pipeline.commands.len() == 1 {
-            return Ok(CompleteCommand::Simple(
+            return Ok(CommandType::Simple(
                 pipeline.commands.into_iter().next().unwrap()
             ));
         } else {
-            return Ok(CompleteCommand::Pipeline(pipeline));
+            return Ok(CommandType::Pipeline(pipeline));
         }
     }
 
@@ -129,7 +138,7 @@ fn parse_and_or_list(pair: pest::iterators::Pair<Rule>) -> Result<CompleteComman
         .zip(pipelines_iter)
         .collect();
 
-    Ok(CompleteCommand::AndOrList(AndOrList::new(first, rest)))
+    Ok(CommandType::AndOrList(AndOrList::new(first, rest)))
 }
 
 fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Pipeline, ParseError> {
@@ -911,6 +920,33 @@ mod tests {
         match result {
             Ok(Statement::Complete(CompleteCommand::Case(_))) => {}
             Ok(other) => panic!("Expected Case, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_background_execution() {
+        let input = "sleep 10 &";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(cmd)) => {
+                assert!(cmd.background, "Command should be marked as background");
+                assert!(matches!(cmd.command, CommandType::Simple(_)));
+            }
+            Ok(other) => panic!("Expected Complete, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_foreground_execution() {
+        let input = "sleep 10";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(cmd)) => {
+                assert!(!cmd.background, "Command should not be marked as background");
+            }
+            Ok(other) => panic!("Expected Complete, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
     }

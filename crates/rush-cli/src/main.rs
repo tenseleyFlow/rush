@@ -128,10 +128,11 @@ fn execute_complete_command(
         execute_and_or_list, execute_case, execute_for, execute_if, execute_pipeline,
         execute_simple_with_redirects, execute_while,
     };
-    use rush_parser::CompleteCommand;
+    use rush_parser::ast::CommandType;
 
-    match cmd {
-        CompleteCommand::Simple(simple_cmd) => {
+    // TODO: Handle background execution (cmd.background)
+    match &cmd.command {
+        CommandType::Simple(simple_cmd) => {
             let exit_code = execute_simple_with_redirects(simple_cmd, context, interactive)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -139,7 +140,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::Pipeline(pipeline) => {
+        CommandType::Pipeline(pipeline) => {
             let exit_code = execute_pipeline(pipeline, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -147,7 +148,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::AndOrList(and_or_list) => {
+        CommandType::AndOrList(and_or_list) => {
             let exit_code = execute_and_or_list(and_or_list, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -155,7 +156,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::If(if_stmt) => {
+        CommandType::If(if_stmt) => {
             let exit_code = execute_if(if_stmt, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -163,7 +164,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::While(while_stmt) => {
+        CommandType::While(while_stmt) => {
             let exit_code = execute_while(while_stmt, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -171,7 +172,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::For(for_stmt) => {
+        CommandType::For(for_stmt) => {
             let exit_code = execute_for(for_stmt, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;
@@ -179,7 +180,7 @@ fn execute_complete_command(
             context.set_exit_status(exit_code);
             Ok(exit_code)
         }
-        CompleteCommand::Case(case_stmt) => {
+        CommandType::Case(case_stmt) => {
             let exit_code = execute_case(case_stmt, context)
                 .map(|result| result.exit_code())
                 .map_err(|e| e.to_string())?;

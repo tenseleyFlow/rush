@@ -10,8 +10,17 @@ pub enum Statement {
     Empty,
 }
 
+/// A complete command with optional background execution flag
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompleteCommand {
+pub struct CompleteCommand {
+    /// The command to execute
+    pub command: CommandType,
+    /// Whether to run in background (trailing &)
+    pub background: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandType {
     /// Simple command with optional variable assignments
     Simple(SimpleCommand),
     /// Pipeline of commands connected by pipes
@@ -274,5 +283,18 @@ impl CaseStatement {
 impl CaseClause {
     pub fn new(patterns: Vec<Word>, body: Vec<CompleteCommand>) -> Self {
         Self { patterns, body }
+    }
+}
+
+impl CompleteCommand {
+    pub fn new(command: CommandType, background: bool) -> Self {
+        Self { command, background }
+    }
+
+    pub fn foreground(command: CommandType) -> Self {
+        Self {
+            command,
+            background: false,
+        }
     }
 }
