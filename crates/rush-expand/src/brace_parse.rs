@@ -8,8 +8,11 @@ pub fn detect_brace_patterns(word: &Word) -> Word {
     for part in &word.parts {
         match part {
             WordPart::Literal(s) => {
-                // Check if this literal contains brace patterns
-                if let Some(brace_word) = try_parse_brace_literal(s) {
+                // First check for arithmetic patterns $((expr))
+                if let Some(arith_word) = try_parse_arithmetic_literal(s) {
+                    new_parts.extend(arith_word.parts);
+                } else if let Some(brace_word) = try_parse_brace_literal(s) {
+                    // Then check for brace patterns
                     new_parts.extend(brace_word.parts);
                 } else {
                     new_parts.push(part.clone());
@@ -23,6 +26,57 @@ pub fn detect_brace_patterns(word: &Word) -> Word {
     }
 
     Word::new(new_parts)
+}
+
+/// Try to parse a literal string for arithmetic patterns $((expr))
+fn try_parse_arithmetic_literal(s: &str) -> Option<Word> {
+    // Find the pattern $((
+    let start = s.find("$((")?;
+
+    // Find the matching ))
+    let rest = &s[start + 3..];
+    let mut paren_count = 1;
+    let mut end = None;
+
+    for (i, ch) in rest.chars().enumerate() {
+        match ch {
+            '(' => paren_count += 1,
+            ')' => {
+                paren_count -= 1;
+                if paren_count == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let end_pos = end?;
+
+    // Extract the expression
+    let before = &s[..start];
+    let expr = &rest[..end_pos];
+    let after = &s[start + 3 + end_pos + 2..];
+
+    // Build the word
+    let mut parts = Vec::new();
+    if !before.is_empty() {
+        parts.push(WordPart::Literal(before.to_string()));
+    }
+    parts.push(WordPart::ArithmeticExpansion(expr.to_string()));
+    if !after.is_empty() {
+        // Recursively handle remaining patterns
+        if let Some(after_word) = try_parse_arithmetic_literal(after) {
+            parts.extend(after_word.parts);
+        } else if let Some(after_word) = try_parse_brace_literal(after) {
+            parts.extend(after_word.parts);
+        } else {
+            parts.push(WordPart::Literal(after.to_string()));
+        }
+    }
+
+    Some(Word::new(parts))
 }
 
 /// Try to parse a literal string for brace patterns

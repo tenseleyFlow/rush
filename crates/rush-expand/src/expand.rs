@@ -1,3 +1,4 @@
+use crate::arithmetic::{evaluate_arithmetic, ArithmeticError};
 use crate::brace::expand_brace;
 use crate::brace_parse::detect_brace_patterns;
 use crate::command_subst::{execute_command_substitution, CommandSubstError};
@@ -9,6 +10,9 @@ use thiserror::Error;
 pub enum ExpansionError {
     #[error("Command substitution failed: {0}")]
     CommandSubstitutionFailed(#[from] CommandSubstError),
+
+    #[error("Arithmetic error: {0}")]
+    ArithmeticError(#[from] ArithmeticError),
 
     #[error("Expansion error: {0}")]
     Other(String),
@@ -64,6 +68,10 @@ fn expand_word_simple(word: &Word, context: &Context) -> Result<String, Expansio
             WordPart::CommandSubstitution(cmd) => {
                 let output = execute_command_substitution(cmd)?;
                 result.push_str(&output);
+            }
+            WordPart::ArithmeticExpansion(expr) => {
+                let value = evaluate_arithmetic(expr, context)?;
+                result.push_str(&value.to_string());
             }
             WordPart::BraceExpansion(_) => {
                 // Should not happen - braces are handled in expand_word_with_braces

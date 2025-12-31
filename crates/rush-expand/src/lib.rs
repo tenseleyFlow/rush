@@ -1,11 +1,13 @@
 // Rush expand - Variable and glob expansion engine
 
+pub mod arithmetic;
 pub mod brace;
 pub mod brace_parse;
 pub mod command_subst;
 pub mod context;
 pub mod expand;
 
+pub use arithmetic::{evaluate_arithmetic, ArithmeticError};
 pub use brace::expand_brace;
 pub use brace_parse::detect_brace_patterns;
 pub use command_subst::{execute_command_substitution, CommandSubstError};

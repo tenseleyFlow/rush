@@ -159,6 +159,8 @@ pub enum WordPart {
     CommandSubstitution(String),
     /// Brace expansion: {a,b,c} or {1..5}
     BraceExpansion(BraceExpansion),
+    /// Arithmetic expansion: $((expr))
+    ArithmeticExpansion(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

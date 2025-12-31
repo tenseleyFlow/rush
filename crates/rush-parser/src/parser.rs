@@ -229,6 +229,13 @@ fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, P
         Rule::var_expansion => {
             Ok(vec![WordPart::VarExpansion(parse_var_expansion(inner)?)])
         }
+        Rule::arithmetic_expansion => {
+            let content = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::arithmetic_expansion))?
+                .as_str()
+                .to_string();
+            Ok(vec![WordPart::ArithmeticExpansion(content)])
+        }
         Rule::command_substitution => {
             let content = inner.into_inner().next()
                 .ok_or_else(|| ParseError::UnexpectedRule(Rule::command_substitution))?
@@ -333,6 +340,13 @@ fn parse_double_quoted_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Wor
         }
         Rule::var_expansion => {
             Ok(vec![WordPart::VarExpansion(parse_var_expansion(inner)?)])
+        }
+        Rule::arithmetic_expansion => {
+            let content = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::arithmetic_expansion))?
+                .as_str()
+                .to_string();
+            Ok(vec![WordPart::ArithmeticExpansion(content)])
         }
         Rule::command_substitution => {
             let content = inner.into_inner().next()

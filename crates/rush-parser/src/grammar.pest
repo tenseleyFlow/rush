@@ -118,6 +118,7 @@ word = { word_part+ }
 word_part = {
     quoted_string
     | var_expansion
+    | arithmetic_expansion
     | command_substitution
     | bare_word_part
 }
@@ -131,6 +132,10 @@ var_expansion = {
 var_modifier = {
     ":-" ~ word  // ${VAR:-default}
 }
+
+// Arithmetic expansion: $((expression))
+arithmetic_expansion = { "$((" ~ arithmetic_expr_content ~ "))" }
+arithmetic_expr_content = @{ (!("))" | NEWLINE) ~ ANY)* }
 
 // Command substitution: $(command)
 command_substitution = { "$(" ~ command_subst_content ~ ")" }
@@ -153,6 +158,7 @@ double_quoted = { "\"" ~ double_quoted_content ~ "\"" }
 double_quoted_content = { double_quoted_part* }
 double_quoted_part = {
     var_expansion
+    | arithmetic_expansion
     | command_substitution
     | double_quoted_text
 }
