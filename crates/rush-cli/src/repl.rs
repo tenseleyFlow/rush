@@ -8,6 +8,10 @@ pub fn run_interactive() -> ExitCode {
     let mut context = Context::new();
 
     loop {
+        // Check for completed/stopped background jobs before each prompt
+        #[cfg(unix)]
+        crate::check_background_jobs(&mut context);
+
         let sig = line_editor.read_line(&prompt);
 
         match sig {

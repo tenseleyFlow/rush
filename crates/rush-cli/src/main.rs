@@ -37,11 +37,52 @@ fn main() -> ExitCode {
         execute_file(&file)
     } else if io::stdin().is_terminal() {
         // Interactive mode (terminal)
+        // Set up job control for interactive mode
+        #[cfg(unix)]
+        if let Err(e) = setup_interactive_shell() {
+            eprintln!("rush: warning: failed to set up job control: {}", e);
+        }
+
         repl::run_interactive()
     } else {
         // Non-interactive mode (stdin)
         execute_stdin()
     }
+}
+
+/// Set up the shell for interactive use with job control
+#[cfg(unix)]
+fn setup_interactive_shell() -> Result<(), String> {
+    use rush_job::setup_shell_terminal;
+
+    // Put shell in its own process group and take terminal control
+    setup_shell_terminal().map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Check for completed or stopped background jobs and update their status
+#[cfg(unix)]
+pub(crate) fn check_background_jobs(context: &mut Context) {
+    use rush_job::check_children;
+
+    // Check for any children that have changed state
+    for (pid, status) in check_children() {
+        // Update the job in the job list
+        if let Some(job_id) = context.job_list.update_job_status(pid, status) {
+            // Print notification for completed jobs
+            if let Some(job) = context.job_list.get_job(job_id) {
+                if job.is_completed() {
+                    println!("[{}]  Done  {}", job.id, job.command);
+                } else if job.is_stopped() {
+                    println!("[{}]  Stopped  {}", job.id, job.command);
+                }
+            }
+        }
+    }
+
+    // Clean up completed jobs
+    context.job_list.clean_completed();
 }
 
 /// Execute a command string
@@ -136,62 +177,97 @@ fn execute_complete_command(
     }
 
     // Foreground execution (normal case)
-    match &cmd.command {
+    let result = match &cmd.command {
         CommandType::Simple(simple_cmd) => {
-            let exit_code = execute_simple_with_redirects(simple_cmd, context, interactive)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_simple_with_redirects(simple_cmd, context, interactive)
+                .map_err(|e| e.to_string())?
         }
         CommandType::Pipeline(pipeline) => {
-            let exit_code = execute_pipeline(pipeline, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_pipeline(pipeline, context)
+                .map_err(|e| e.to_string())?
         }
         CommandType::AndOrList(and_or_list) => {
-            let exit_code = execute_and_or_list(and_or_list, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_and_or_list(and_or_list, context)
+                .map_err(|e| e.to_string())?
         }
         CommandType::If(if_stmt) => {
-            let exit_code = execute_if(if_stmt, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_if(if_stmt, context)
+                .map_err(|e| e.to_string())?
         }
         CommandType::While(while_stmt) => {
-            let exit_code = execute_while(while_stmt, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_while(while_stmt, context)
+                .map_err(|e| e.to_string())?
         }
         CommandType::For(for_stmt) => {
-            let exit_code = execute_for(for_stmt, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
-
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+            execute_for(for_stmt, context)
+                .map_err(|e| e.to_string())?
         }
         CommandType::Case(case_stmt) => {
-            let exit_code = execute_case(case_stmt, context)
-                .map(|result| result.exit_code())
-                .map_err(|e| e.to_string())?;
+            execute_case(case_stmt, context)
+                .map_err(|e| e.to_string())?
+        }
+    };
 
-            context.set_exit_status(exit_code);
-            Ok(exit_code)
+    // Check if the job was stopped (Ctrl-Z)
+    #[cfg(unix)]
+    if result.is_stopped() {
+        if let Some(job_control) = &result.job_control {
+            // Construct command string from the AST
+            let command_string = build_command_string(&cmd.command, context);
+
+            // Add to job list
+            let job_id = context.job_list.add_job(
+                job_control.pgid,
+                command_string.clone(),
+                vec![job_control.pid],
+                false, // not foreground anymore
+            );
+
+            // Print notification
+            eprintln!("[{}]+  Stopped  {}", job_id, command_string);
+        }
+    }
+
+    let exit_code = result.exit_code();
+    context.set_exit_status(exit_code);
+    Ok(exit_code)
+}
+
+/// Build a command string from AST for display purposes
+#[cfg(unix)]
+fn build_command_string(cmd: &rush_parser::ast::CommandType, context: &Context) -> String {
+    use rush_parser::ast::CommandType;
+
+    match cmd {
+        CommandType::Simple(simple_cmd) => {
+            // Expand words to get the command as it was executed
+            if let Ok(expanded) = rush_expand::expand_words(&simple_cmd.words, context) {
+                expanded.join(" ")
+            } else {
+                // Fallback if expansion fails
+                "<command>".to_string()
+            }
+        }
+        CommandType::Pipeline(pipeline) => {
+            let parts: Vec<String> = pipeline.commands.iter()
+                .filter_map(|simple_cmd| {
+                    if let Ok(expanded) = rush_expand::expand_words(&simple_cmd.words, context) {
+                        if !expanded.is_empty() {
+                            Some(expanded.join(" "))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            parts.join(" | ")
+        }
+        _ => {
+            // For control flow commands, just show a generic label
+            // In practice, these won't be stopped in the foreground in Phase 5
+            "command".to_string()
         }
     }
 }
