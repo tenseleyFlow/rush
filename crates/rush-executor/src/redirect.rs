@@ -1,5 +1,5 @@
 use rush_expand::Context;
-use rush_parser::ast::Redirect;
+use rush_parser::ast::{CommandType, Redirect};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::process::{Command, Stdio};
@@ -159,10 +159,27 @@ fn apply_single_redirect(
             if *expand {
                 let expanded_lines: Result<Vec<String>, _> = lines.iter()
                     .map(|line| {
-                        // Parse each line as a word and expand it
-                        let word = rush_parser::Word::from_literal(line);
-                        rush_expand::expand_word(&word, context)
-                            .map_err(|e| RedirectError::ExpansionError(e.to_string()))
+                        // Parse the line to detect variables and other expansions
+                        // We need to parse it as a simple command and extract the word
+                        let fake_cmd = format!("echo {}", line);
+                        match rush_parser::parse_line(&fake_cmd) {
+                            Ok(rush_parser::Statement::Complete(cmd)) => {
+                                match &cmd.command {
+                                    CommandType::Simple(simple) => {
+                                        // Get the words (skip "echo")
+                                        if simple.words.len() > 1 {
+                                            rush_expand::expand_words(&simple.words[1..], context)
+                                                .map(|words| words.join(" "))
+                                                .map_err(|e| RedirectError::ExpansionError(e.to_string()))
+                                        } else {
+                                            Ok(line.clone())
+                                        }
+                                    }
+                                    _ => Ok(line.clone()),
+                                }
+                            }
+                            _ => Ok(line.clone()),
+                        }
                     })
                     .collect();
                 lines = expanded_lines?;

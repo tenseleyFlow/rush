@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
+mod heredoc;
 mod repl;
 
 #[derive(Parser)]
@@ -108,14 +109,30 @@ fn execute_file(path: &str) -> ExitCode {
     };
 
     let mut context = Context::new();
-    // Parse and execute the entire file as one unit to support multi-line control flow
-    match execute_line(&content, &mut context, false) {
-        Ok(code) => ExitCode::from(code as u8),
-        Err(e) => {
-            eprintln!("rush: {}", e);
-            ExitCode::from(1)
+
+    // Split into lines for heredoc support
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let mut lines_iter = lines.into_iter();
+
+    let mut last_exit_code = 0;
+
+    // Execute line-by-line with heredoc support
+    while let Some(line) = lines_iter.next() {
+        // Skip empty lines and comments
+        if line.trim().is_empty() || line.trim().starts_with('#') {
+            continue;
+        }
+
+        match execute_statement_with_heredocs(&line, &mut lines_iter, &mut context, false) {
+            Ok(code) => last_exit_code = code,
+            Err(e) => {
+                eprintln!("rush: {}", e);
+                return ExitCode::from(1);
+            }
         }
     }
+
+    ExitCode::from(last_exit_code as u8)
 }
 
 /// Execute commands from stdin
@@ -141,9 +158,47 @@ fn execute_stdin() -> ExitCode {
 
 /// Execute a single line of shell input
 fn execute_line(line: &str, context: &mut Context, interactive: bool) -> Result<i32, String> {
+    // For single-line execution, heredocs won't work (no way to get more lines)
+    execute_statement_with_heredocs(line, &mut std::iter::empty(), context, interactive)
+}
+
+/// Execute a statement, optionally reading heredoc content from lines
+fn execute_statement_with_heredocs<I>(
+    line: &str,
+    lines: &mut I,
+    context: &mut Context,
+    interactive: bool,
+) -> Result<i32, String>
+where
+    I: Iterator<Item = String>,
+{
     use rush_parser::{parse_line, Statement};
 
-    let statement = parse_line(line).map_err(|e| e.to_string())?;
+    let mut statement = parse_line(line).map_err(|e| e.to_string())?;
+
+    // Check if we need to collect heredoc content
+    if heredoc::has_heredocs(&statement) {
+        let delimiters = heredoc::get_heredoc_delimiters(&statement);
+        let mut content_map = std::collections::HashMap::new();
+
+        // Collect content for each heredoc
+        for delimiter in delimiters {
+            let mut content_lines = Vec::new();
+
+            // Read lines until we find the delimiter
+            for line in lines.by_ref() {
+                if line.trim() == delimiter {
+                    break;
+                }
+                content_lines.push(line);
+            }
+
+            content_map.insert(delimiter, content_lines);
+        }
+
+        // Fill the content into the statement
+        heredoc::fill_heredoc_content(&mut statement, &content_map);
+    }
 
     match statement {
         Statement::Empty => Ok(0),

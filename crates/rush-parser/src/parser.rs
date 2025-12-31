@@ -557,8 +557,12 @@ fn parse_redirect(pair: pest::iterators::Pair<Rule>) -> Result<Redirect, ParseEr
             let text = inner.as_str();
             let strip_tabs = text.starts_with("<<-");
 
-            let delimiter_pair = inner.into_inner().next()
+            let heredoc_delimiter_pair = inner.into_inner().next()
                 .ok_or_else(|| ParseError::UnexpectedRule(Rule::redirect_heredoc))?;
+
+            // heredoc_delimiter contains either quoted_string or bare_delimiter
+            let delimiter_pair = heredoc_delimiter_pair.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::heredoc_delimiter))?;
 
             // Extract delimiter and check if quoted (determines expansion)
             let (delimiter, expand) = match delimiter_pair.as_rule() {
