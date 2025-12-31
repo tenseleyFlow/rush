@@ -114,6 +114,8 @@ pub fn execute_pipeline(
     // Return the exit status of the last command
     Ok(ExecutionResult {
         exit_status: last_exit_status.unwrap(),
+        #[cfg(unix)]
+        job_control: None,
     })
 }
 

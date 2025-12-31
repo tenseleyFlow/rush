@@ -9,7 +9,7 @@ pub mod unix {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::Command;
 
-    use super::super::{ExecutionError, ExecutionResult};
+    use super::super::{ExecutionError, ExecutionResult, JobControlInfo};
 
     /// Initialize signal handling for the shell
     /// The shell should ignore SIGINT and SIGTSTP so that Ctrl+C and Ctrl+Z
@@ -43,6 +43,7 @@ pub mod unix {
             let status = command.status()?;
             return Ok(ExecutionResult {
                 exit_status: status,
+                job_control: None,
             });
         }
 
@@ -76,21 +77,24 @@ pub mod unix {
         let _ = tcsetpgrp(&stdin, child_pid);
 
         // Wait for the child to complete
-        let status = loop {
+        let (status, job_control) = loop {
             match waitpid(child_pid, Some(WaitPidFlag::WUNTRACED)) {
                 Ok(WaitStatus::Exited(_, code)) => {
-                    break std::process::ExitStatus::from_raw(code << 8);
+                    break (std::process::ExitStatus::from_raw(code << 8), None);
                 }
                 Ok(WaitStatus::Signaled(_, signal, _)) => {
                     // Child was killed by a signal
-                    break std::process::ExitStatus::from_raw(signal as i32 + 128);
+                    break (std::process::ExitStatus::from_raw(signal as i32 + 128), None);
                 }
                 Ok(WaitStatus::Stopped(_, _)) => {
                     // Child was stopped (Ctrl+Z)
-                    // For now, just report it was stopped
-                    // In Phase 5 (job control), we'll add it to the job list
-                    eprintln!("\n[Stopped]");
-                    break std::process::ExitStatus::from_raw(148); // SIGTSTP + 128
+                    // Return job control info so the shell can add it to the job list
+                    let job_control = Some(JobControlInfo {
+                        pid: child_pid,
+                        pgid: child_pid, // Child is its own process group leader
+                        stopped: true,
+                    });
+                    break (std::process::ExitStatus::from_raw(148), job_control); // SIGTSTP + 128
                 }
                 Ok(WaitStatus::Continued(_)) => {
                     // Child continued, keep waiting
@@ -120,6 +124,7 @@ pub mod unix {
 
         Ok(ExecutionResult {
             exit_status: status,
+            job_control,
         })
     }
 }

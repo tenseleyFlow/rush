@@ -20,6 +20,20 @@ pub enum ExecutionError {
 
 pub struct ExecutionResult {
     pub exit_status: ExitStatus,
+    /// Job control information (Unix only)
+    #[cfg(unix)]
+    pub job_control: Option<JobControlInfo>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct JobControlInfo {
+    /// Process ID
+    pub pid: nix::unistd::Pid,
+    /// Process group ID
+    pub pgid: nix::unistd::Pid,
+    /// Whether the job was stopped (Ctrl-Z)
+    pub stopped: bool,
 }
 
 impl ExecutionResult {
@@ -33,6 +47,16 @@ impl ExecutionResult {
 
     pub fn success(&self) -> bool {
         self.exit_status.success()
+    }
+
+    #[cfg(unix)]
+    pub fn is_stopped(&self) -> bool {
+        self.job_control.as_ref().map_or(false, |jc| jc.stopped)
+    }
+
+    #[cfg(not(unix))]
+    pub fn is_stopped(&self) -> bool {
+        false
     }
 }
 
@@ -132,6 +156,7 @@ fn exit_code_to_result(code: i32) -> ExecutionResult {
     {
         ExecutionResult {
             exit_status: std::process::ExitStatus::from_raw(code << 8),
+            job_control: None,
         }
     }
 
@@ -150,6 +175,7 @@ fn exit_code_to_result(code: i32) -> ExecutionResult {
 pub(crate) fn success_result() -> ExecutionResult {
     ExecutionResult {
         exit_status: std::process::ExitStatus::from_raw(0),
+        job_control: None,
     }
 }
 
@@ -157,6 +183,7 @@ pub(crate) fn success_result() -> ExecutionResult {
 fn error_result() -> ExecutionResult {
     ExecutionResult {
         exit_status: std::process::ExitStatus::from_raw(1 << 8),
+        job_control: None,
     }
 }
 
