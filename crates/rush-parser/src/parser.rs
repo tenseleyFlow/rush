@@ -255,6 +255,16 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
     let original = pair.as_str();
     let is_braced = original.starts_with("${");
 
+    // Check for ${#VAR} - length expansion
+    if original.starts_with("${#") {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::Length(var_name));
+    }
+
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or_else(|| {
         ParseError::UnexpectedRule(Rule::var_expansion)
@@ -262,29 +272,137 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
 
     match first.as_rule() {
         Rule::var_name => {
+            let var_name = first.as_str().to_string();
+
             // Check if there's a modifier
             if let Some(modifier_pair) = inner.next() {
                 if modifier_pair.as_rule() == Rule::var_modifier {
-                    // ${VAR:-default}
-                    let default_word = modifier_pair.into_inner().next()
-                        .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
-                    let default = parse_word(default_word)?;
-                    return Ok(VarExpansion::WithDefault {
-                        name: first.as_str().to_string(),
-                        default: Box::new(default),
-                    });
+                    return parse_var_modifier(&var_name, modifier_pair);
                 }
             }
 
             // Determine if it's simple or braced
             if is_braced {
-                Ok(VarExpansion::Braced(first.as_str().to_string()))
+                Ok(VarExpansion::Braced(var_name))
             } else {
-                Ok(VarExpansion::Simple(first.as_str().to_string()))
+                Ok(VarExpansion::Simple(var_name))
             }
         }
         _ => Err(ParseError::UnexpectedRule(first.as_rule())),
     }
+}
+
+fn parse_var_modifier(var_name: &str, pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion, ParseError> {
+    let modifier_text = pair.as_str();
+
+    if modifier_text.starts_with(":-") {
+        // ${VAR:-default}
+        let default_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let default = parse_word(default_word)?;
+        return Ok(VarExpansion::WithDefault {
+            name: var_name.to_string(),
+            default: Box::new(default),
+        });
+    }
+
+    let mut inner = pair.into_inner();
+
+    // Check the pattern
+    if modifier_text.starts_with("##") {
+        // ${VAR##pattern}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::RemoveLongestPrefix {
+            name: var_name.to_string(),
+            pattern,
+        });
+    } else if modifier_text.starts_with('#') {
+        // ${VAR#pattern}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::RemoveShortestPrefix {
+            name: var_name.to_string(),
+            pattern,
+        });
+    } else if modifier_text.starts_with("%%") {
+        // ${VAR%%pattern}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::RemoveLongestSuffix {
+            name: var_name.to_string(),
+            pattern,
+        });
+    } else if modifier_text.starts_with('%') {
+        // ${VAR%pattern}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::RemoveShortestSuffix {
+            name: var_name.to_string(),
+            pattern,
+        });
+    } else if modifier_text.starts_with("//") {
+        // ${VAR//pattern/replacement}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        let replacement = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ReplaceAll {
+            name: var_name.to_string(),
+            pattern,
+            replacement,
+        });
+    } else if modifier_text.starts_with('/') {
+        // ${VAR/pattern/replacement}
+        let pattern = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        let replacement = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::ReplaceFirst {
+            name: var_name.to_string(),
+            pattern,
+            replacement,
+        });
+    } else if modifier_text.starts_with(':') {
+        // ${VAR:offset} or ${VAR:offset:length}
+        let offset = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?
+            .as_str()
+            .parse::<i32>()
+            .map_err(|_| ParseError::UnexpectedRule(Rule::var_offset))?;
+        let length = inner.next().map(|l| l.as_str().parse::<usize>().ok()).flatten();
+        return Ok(VarExpansion::Substring {
+            name: var_name.to_string(),
+            offset,
+            length,
+        });
+    } else if modifier_text == "^^" {
+        return Ok(VarExpansion::UppercaseAll(var_name.to_string()));
+    } else if modifier_text == "^" {
+        return Ok(VarExpansion::UppercaseFirst(var_name.to_string()));
+    } else if modifier_text == ",," {
+        return Ok(VarExpansion::LowercaseAll(var_name.to_string()));
+    } else if modifier_text == "," {
+        return Ok(VarExpansion::LowercaseFirst(var_name.to_string()));
+    }
+
+    Err(ParseError::UnexpectedRule(Rule::var_modifier))
 }
 
 fn parse_quoted_string(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, ParseError> {

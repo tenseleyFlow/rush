@@ -183,6 +183,30 @@ pub enum VarExpansion {
     Braced(String),
     /// With default: ${VAR:-default}
     WithDefault { name: String, default: Box<Word> },
+    /// Length: ${#VAR}
+    Length(String),
+    /// Remove shortest prefix: ${VAR#pattern}
+    RemoveShortestPrefix { name: String, pattern: String },
+    /// Remove longest prefix: ${VAR##pattern}
+    RemoveLongestPrefix { name: String, pattern: String },
+    /// Remove shortest suffix: ${VAR%pattern}
+    RemoveShortestSuffix { name: String, pattern: String },
+    /// Remove longest suffix: ${VAR%%pattern}
+    RemoveLongestSuffix { name: String, pattern: String },
+    /// Replace first: ${VAR/pattern/replacement}
+    ReplaceFirst { name: String, pattern: String, replacement: String },
+    /// Replace all: ${VAR//pattern/replacement}
+    ReplaceAll { name: String, pattern: String, replacement: String },
+    /// Substring: ${VAR:offset} or ${VAR:offset:length}
+    Substring { name: String, offset: i32, length: Option<usize> },
+    /// Uppercase first: ${VAR^}
+    UppercaseFirst(String),
+    /// Uppercase all: ${VAR^^}
+    UppercaseAll(String),
+    /// Lowercase first: ${VAR,}
+    LowercaseFirst(String),
+    /// Lowercase all: ${VAR,,}
+    LowercaseAll(String),
 }
 
 impl Pipeline {

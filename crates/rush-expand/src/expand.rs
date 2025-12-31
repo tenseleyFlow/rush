@@ -109,6 +109,205 @@ fn expand_var(var_exp: &VarExpansion, context: &Context) -> Result<String, Expan
                 }
             }
         }
+        VarExpansion::Length(name) => {
+            // ${#VAR} - return the length of the variable value
+            let value = context.get_var(name).unwrap_or("");
+            Ok(value.len().to_string())
+        }
+        VarExpansion::RemoveShortestPrefix { name, pattern } => {
+            // ${VAR#pattern} - remove shortest matching prefix
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(remove_prefix(&value, pattern, false))
+        }
+        VarExpansion::RemoveLongestPrefix { name, pattern } => {
+            // ${VAR##pattern} - remove longest matching prefix
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(remove_prefix(&value, pattern, true))
+        }
+        VarExpansion::RemoveShortestSuffix { name, pattern } => {
+            // ${VAR%pattern} - remove shortest matching suffix
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(remove_suffix(&value, pattern, false))
+        }
+        VarExpansion::RemoveLongestSuffix { name, pattern } => {
+            // ${VAR%%pattern} - remove longest matching suffix
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(remove_suffix(&value, pattern, true))
+        }
+        VarExpansion::ReplaceFirst { name, pattern, replacement } => {
+            // ${VAR/pattern/replacement} - replace first occurrence
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(replace_pattern(&value, pattern, replacement, false))
+        }
+        VarExpansion::ReplaceAll { name, pattern, replacement } => {
+            // ${VAR//pattern/replacement} - replace all occurrences
+            let value = context.get_var(name).unwrap_or("").to_string();
+            Ok(replace_pattern(&value, pattern, replacement, true))
+        }
+        VarExpansion::Substring { name, offset, length } => {
+            // ${VAR:offset} or ${VAR:offset:length}
+            let value = context.get_var(name).unwrap_or("");
+            Ok(substring(value, *offset, *length))
+        }
+        VarExpansion::UppercaseFirst(name) => {
+            // ${VAR^} - uppercase first character
+            let value = context.get_var(name).unwrap_or("");
+            Ok(uppercase_first(value))
+        }
+        VarExpansion::UppercaseAll(name) => {
+            // ${VAR^^} - uppercase all characters
+            let value = context.get_var(name).unwrap_or("");
+            Ok(value.to_uppercase())
+        }
+        VarExpansion::LowercaseFirst(name) => {
+            // ${VAR,} - lowercase first character
+            let value = context.get_var(name).unwrap_or("");
+            Ok(lowercase_first(value))
+        }
+        VarExpansion::LowercaseAll(name) => {
+            // ${VAR,,} - lowercase all characters
+            let value = context.get_var(name).unwrap_or("");
+            Ok(value.to_lowercase())
+        }
+    }
+}
+
+/// Remove prefix from string based on pattern
+/// If greedy is true, removes the longest match; otherwise shortest
+fn remove_prefix(value: &str, pattern: &str, greedy: bool) -> String {
+    // Simple glob pattern matching with * wildcard
+    if pattern.contains('*') {
+        // For patterns like "a*b", we match from start
+        let parts: Vec<&str> = pattern.split('*').collect();
+        if parts.len() == 2 {
+            let prefix = parts[0];
+            let suffix = parts[1];
+
+            if value.starts_with(prefix) {
+                if greedy {
+                    // Find the last occurrence of suffix
+                    if let Some(pos) = value.rfind(suffix) {
+                        return value[pos + suffix.len()..].to_string();
+                    }
+                } else {
+                    // Find the first occurrence of suffix after prefix
+                    if let Some(pos) = value[prefix.len()..].find(suffix) {
+                        return value[prefix.len() + pos + suffix.len()..].to_string();
+                    }
+                }
+            }
+        }
+    } else {
+        // Literal pattern - just remove if it's a prefix
+        if value.starts_with(pattern) {
+            return value[pattern.len()..].to_string();
+        }
+    }
+    value.to_string()
+}
+
+/// Remove suffix from string based on pattern
+/// If greedy is true, removes the longest match; otherwise shortest
+fn remove_suffix(value: &str, pattern: &str, greedy: bool) -> String {
+    // Simple glob pattern matching with * wildcard
+    if pattern.contains('*') {
+        let parts: Vec<&str> = pattern.split('*').collect();
+        if parts.len() == 2 {
+            let prefix = parts[0];
+            let suffix = parts[1];
+
+            if value.ends_with(suffix) {
+                if greedy {
+                    // Find the first occurrence of prefix
+                    if let Some(pos) = value.find(prefix) {
+                        return value[..pos].to_string();
+                    }
+                } else {
+                    // Find the last occurrence of prefix before suffix
+                    let end_without_suffix = value.len() - suffix.len();
+                    if let Some(pos) = value[..end_without_suffix].rfind(prefix) {
+                        return value[..pos].to_string();
+                    }
+                }
+            }
+        }
+    } else {
+        // Literal pattern - just remove if it's a suffix
+        if value.ends_with(pattern) {
+            return value[..value.len() - pattern.len()].to_string();
+        }
+    }
+    value.to_string()
+}
+
+/// Replace pattern in string
+/// If all is true, replaces all occurrences; otherwise just first
+fn replace_pattern(value: &str, pattern: &str, replacement: &str, all: bool) -> String {
+    // For now, treat pattern as literal (can be extended to glob patterns)
+    if all {
+        value.replace(pattern, replacement)
+    } else {
+        value.replacen(pattern, replacement, 1)
+    }
+}
+
+/// Extract substring from value
+/// Offset can be negative (from end), length is optional
+fn substring(value: &str, offset: i32, length: Option<usize>) -> String {
+    let len = value.len() as i32;
+
+    // Calculate actual start position
+    let start = if offset < 0 {
+        // Negative offset: count from end
+        let pos = len + offset;
+        if pos < 0 {
+            0
+        } else {
+            pos as usize
+        }
+    } else {
+        // Positive offset: from start
+        if offset as usize > value.len() {
+            return String::new();
+        }
+        offset as usize
+    };
+
+    // Calculate end position
+    match length {
+        Some(len) => {
+            let end = (start + len).min(value.len());
+            value[start..end].to_string()
+        }
+        None => {
+            value[start..].to_string()
+        }
+    }
+}
+
+/// Uppercase first character
+fn uppercase_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut result = first.to_uppercase().to_string();
+            result.push_str(chars.as_str());
+            result
+        }
+        None => String::new(),
+    }
+}
+
+/// Lowercase first character
+fn lowercase_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut result = first.to_lowercase().to_string();
+            result.push_str(chars.as_str());
+            result
+        }
+        None => String::new(),
     }
 }
 
