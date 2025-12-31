@@ -2,6 +2,7 @@ use crate::command::find_in_path;
 use crate::redirect::{apply_redirects, RedirectError};
 use crate::{ExecutionError, ExecutionResult};
 use rush_expand::Context;
+use rush_interactive::ErrorHints;
 use rush_parser::ast::{AndOrList, AndOrOp, Pipeline, SimpleCommand};
 use std::process::{Command, Stdio};
 use thiserror::Error;
@@ -63,7 +64,7 @@ pub fn execute_pipeline(
 
         // Find the command in PATH
         let program_path = find_in_path(command_name)
-            .ok_or_else(|| ExecutionError::CommandNotFound(command_name.to_string()))?;
+            .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
 
         // Build the command
         let mut cmd = Command::new(program_path);
@@ -192,7 +193,7 @@ pub fn execute_simple_with_redirects(
 
     // Find the command in PATH
     let program_path = find_in_path(command_name)
-        .ok_or_else(|| ExecutionError::CommandNotFound(command_name.to_string()))?;
+        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
 
     // Build the command
     let mut command = Command::new(program_path);

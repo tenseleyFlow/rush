@@ -2,6 +2,7 @@ use crate::command::find_in_path;
 use crate::redirect::apply_redirects;
 use crate::{ExecutionError, PipelineError};
 use rush_expand::Context;
+use rush_interactive::ErrorHints;
 use rush_parser::ast::{Pipeline, SimpleCommand};
 use std::process::{Command, Stdio};
 
@@ -32,7 +33,7 @@ pub fn execute_simple_background(
 
     // Find the command in PATH
     let program_path = find_in_path(command_name)
-        .ok_or_else(|| ExecutionError::CommandNotFound(command_name.to_string()))?;
+        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
 
     // Build the command string for display
     let command_string = format!("{} {}", command_name, args.join(" "));
@@ -107,7 +108,7 @@ pub fn execute_pipeline_background(
 
         // Find the command in PATH
         let program_path = find_in_path(command_name)
-            .ok_or_else(|| ExecutionError::CommandNotFound(command_name.to_string()))?;
+            .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
 
         // Build the command
         let mut cmd = Command::new(program_path);

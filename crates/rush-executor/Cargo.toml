@@ -10,6 +10,7 @@ repository.workspace = true
 rush-parser = { path = "../rush-parser" }
 rush-expand = { path = "../rush-expand" }
 rush-job = { path = "../rush-job" }
+rush-interactive = { path = "../rush-interactive" }
 nix = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

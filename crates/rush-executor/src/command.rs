@@ -2,13 +2,14 @@ use std::env;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use thiserror::Error;
+use rush_interactive::ErrorHints;
 
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
 #[derive(Error, Debug)]
 pub enum ExecutionError {
-    #[error("Command not found: {0}")]
+    #[error("{0}")]
     CommandNotFound(String),
 
     #[error("I/O error: {0}")]
@@ -81,7 +82,7 @@ pub fn execute_command(
 
     // Try to find the command in PATH
     let program_path = find_in_path(command)
-        .ok_or_else(|| ExecutionError::CommandNotFound(command.to_string()))?;
+        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command)))?;
 
     // Build the command
     let mut cmd = Command::new(program_path);
