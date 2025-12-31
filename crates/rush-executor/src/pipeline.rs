@@ -191,6 +191,22 @@ pub fn execute_simple_with_redirects(
         return Ok(result);
     }
 
+    // Check if it's a function
+    if let Some(function_def) = context.functions.get(command_name).cloned() {
+        // TODO: Set up function parameters ($1, $2, etc.)
+        // TODO: Create function scope
+        // For now, just execute the function body
+        let mut last_result = crate::command::success_result();
+        for cmd in &function_def.body {
+            last_result = crate::control_flow::execute_complete_command(cmd, context)
+                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )))?;
+        }
+        return Ok(last_result);
+    }
+
     // Find the command in PATH
     let program_path = find_in_path(command_name)
         .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;

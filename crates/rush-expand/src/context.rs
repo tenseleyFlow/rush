@@ -13,6 +13,8 @@ pub struct Context {
     exported: HashMap<String, String>,
     /// Exit status of last command
     pub last_exit_status: i32,
+    /// Shell functions (name -> body)
+    pub functions: HashMap<String, rush_parser::ast::FunctionDef>,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
@@ -25,6 +27,7 @@ impl Context {
             variables: HashMap::new(),
             exported: HashMap::new(),
             last_exit_status: 0,
+            functions: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         };
@@ -44,6 +47,7 @@ impl Context {
             variables: HashMap::new(),
             exported: HashMap::new(),
             last_exit_status: 0,
+            functions: HashMap::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         }

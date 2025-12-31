@@ -15,7 +15,8 @@ command_line = { (complete_command ~ (separator ~ complete_command)* ~ separator
 // Can optionally be run in background with &
 // Don't try to parse closing keywords as commands
 complete_command = {
-    (if_statement
+    (function_definition
+    | if_statement
     | while_statement
     | for_statement
     | case_statement
@@ -73,6 +74,14 @@ case_clause = {
 }
 
 pattern = { word }
+
+// Function definition: function name { body; } or name() { body; }
+function_definition = {
+    "function" ~ keyword_boundary ~ ws+ ~ function_name ~ ws* ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
+    | function_name ~ ws* ~ "(" ~ ws* ~ ")" ~ ws* ~ "{" ~ separator ~ command_list ~ separator? ~ "}"
+}
+
+function_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Command list: one or more complete commands separated by newlines or semicolons
 command_list = { complete_command ~ (separator ~ complete_command)* }

@@ -35,6 +35,8 @@ pub enum CommandType {
     For(ForStatement),
     /// Case statement
     Case(CaseStatement),
+    /// Function definition
+    Function(FunctionDef),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +145,14 @@ pub struct CaseClause {
     /// Patterns to match (connected by |)
     pub patterns: Vec<Word>,
     /// Commands to execute if pattern matches
+    pub body: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionDef {
+    /// Function name
+    pub name: String,
+    /// Function body (commands to execute)
     pub body: Vec<CompleteCommand>,
 }
 
@@ -332,6 +342,12 @@ impl CaseStatement {
 impl CaseClause {
     pub fn new(patterns: Vec<Word>, body: Vec<CompleteCommand>) -> Self {
         Self { patterns, body }
+    }
+}
+
+impl FunctionDef {
+    pub fn new(name: String, body: Vec<CompleteCommand>) -> Self {
+        Self { name, body }
     }
 }
 

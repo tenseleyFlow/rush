@@ -116,7 +116,7 @@ pub fn execute_case(
 }
 
 /// Execute a complete command (helper for recursive execution)
-fn execute_complete_command(
+pub(crate) fn execute_complete_command(
     cmd: &CompleteCommand,
     context: &mut Context,
 ) -> Result<ExecutionResult, PipelineError> {
@@ -133,6 +133,11 @@ fn execute_complete_command(
         CommandType::While(while_stmt) => execute_while(while_stmt, context),
         CommandType::For(for_stmt) => execute_for(for_stmt, context),
         CommandType::Case(case_stmt) => execute_case(case_stmt, context),
+        CommandType::Function(function_def) => {
+            // Store function in context
+            context.functions.insert(function_def.name.clone(), function_def.clone());
+            Ok(crate::command::success_result())
+        }
     }
 }
 

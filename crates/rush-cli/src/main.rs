@@ -261,6 +261,16 @@ fn execute_complete_command(
             execute_case(case_stmt, context)
                 .map_err(|e| e.to_string())?
         }
+        CommandType::Function(function_def) => {
+            // Store function in context
+            context.functions.insert(function_def.name.clone(), function_def.clone());
+            // Return success
+            rush_executor::command::ExecutionResult {
+                exit_status: std::process::ExitStatus::default(),
+                #[cfg(unix)]
+                job_control: None,
+            }
+        }
     };
 
     // Check if the job was stopped (Ctrl-Z)

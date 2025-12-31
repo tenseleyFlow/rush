@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::ast::{
     AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CommandType, CompleteCommand,
-    ElifClause, ForStatement, IfStatement, Pipeline, Redirect, SimpleCommand, Statement,
-    VarExpansion, WhileStatement, Word, WordPart,
+    ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, Redirect, SimpleCommand,
+    Statement, VarExpansion, WhileStatement, Word, WordPart,
 };
 
 #[derive(Parser)]
@@ -85,6 +85,7 @@ fn parse_complete_command(pair: pest::iterators::Pair<Rule>) -> Result<CompleteC
         .unwrap_or(false);
 
     let command = match command_pair.as_rule() {
+        Rule::function_definition => CommandType::Function(parse_function_definition(command_pair)?),
         Rule::if_statement => CommandType::If(parse_if_statement(command_pair)?),
         Rule::while_statement => CommandType::While(parse_while_statement(command_pair)?),
         Rule::for_statement => CommandType::For(parse_for_statement(command_pair)?),
@@ -773,6 +774,29 @@ fn parse_case_clause(pair: pest::iterators::Pair<Rule>) -> Result<CaseClause, Pa
     }
 
     Ok(CaseClause::new(patterns, body))
+}
+
+fn parse_function_definition(pair: pest::iterators::Pair<Rule>) -> Result<FunctionDef, ParseError> {
+    let mut name = None;
+    let mut body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::function_name => {
+                name = Some(inner_pair.as_str().to_string());
+            }
+            Rule::command_list => {
+                body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(FunctionDef::new(
+        name.ok_or_else(|| ParseError::UnexpectedRule(Rule::function_definition))?,
+        body,
+    ))
 }
 
 fn parse_command_list(pair: pest::iterators::Pair<Rule>) -> Result<Vec<CompleteCommand>, ParseError> {
