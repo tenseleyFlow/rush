@@ -107,6 +107,26 @@ pub(crate) fn execute_builtin(command: &str, args: &[String]) -> Option<Executio
             let exit_code = crate::test_builtin::execute_test(args);
             Some(exit_code_to_result(exit_code))
         }
+        "jobs" => {
+            // TODO: Implement jobs builtin - list all jobs
+            // Will need access to JobList from shell context
+            eprintln!("jobs: not yet implemented");
+            Some(success_result())
+        }
+        "fg" => {
+            // TODO: Implement fg builtin - bring job to foreground
+            // Usage: fg [job_id]
+            // Will need access to JobList and terminal control
+            eprintln!("fg: not yet implemented");
+            Some(error_result())
+        }
+        "bg" => {
+            // TODO: Implement bg builtin - continue job in background
+            // Usage: bg [job_id]
+            // Will need access to JobList
+            eprintln!("bg: not yet implemented");
+            Some(error_result())
+        }
         _ => None,
     }
 }
