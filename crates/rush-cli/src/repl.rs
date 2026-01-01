@@ -97,7 +97,9 @@ pub fn run_interactive() -> ExitCode {
         ))
         .with_completer(Box::new(RushCompleter::new()))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
-        .with_edit_mode(Box::new(Emacs::new(keybindings)));
+        .with_edit_mode(Box::new(Emacs::new(keybindings)))
+        .with_quick_completions(true)   // Auto-complete when single match
+        .with_partial_completions(true); // Complete common prefix for multiple matches
 
     // Add history if we successfully created it
     if let Some(history) = history_file {
