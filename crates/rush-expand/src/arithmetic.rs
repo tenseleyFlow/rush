@@ -11,6 +11,36 @@ pub enum ArithmeticError {
 
     #[error("Invalid number: {0}")]
     InvalidNumber(String),
+
+    #[error("Not an lvalue: cannot assign to expression")]
+    NotAnLvalue,
+}
+
+/// Represents either a concrete value or an lvalue (variable that can be assigned to)
+#[derive(Debug, Clone)]
+enum LValue {
+    /// A concrete value (result of an expression)
+    Value(i64),
+    /// A variable reference with its name and current value
+    Variable { name: String, value: i64 },
+}
+
+impl LValue {
+    /// Get the numeric value
+    fn value(&self) -> i64 {
+        match self {
+            LValue::Value(v) => *v,
+            LValue::Variable { value, .. } => *value,
+        }
+    }
+
+    /// Get the variable name if this is an lvalue, None otherwise
+    fn var_name(&self) -> Option<&str> {
+        match self {
+            LValue::Value(_) => None,
+            LValue::Variable { name, .. } => Some(name),
+        }
+    }
 }
 
 /// Evaluate an arithmetic expression
@@ -341,13 +371,32 @@ impl<'a> Parser<'a> {
         self.pos += 1;
     }
 
+    /// Set a variable in the context and return the new value
+    fn set_var(&mut self, name: &str, value: i64) -> i64 {
+        let _ = self.context.set_var(name, value.to_string());
+        value
+    }
+
+    /// Get variable value from context
+    fn get_var(&self, name: &str) -> i64 {
+        self.context.get_var(name)
+            .unwrap_or("0")
+            .parse::<i64>()
+            .unwrap_or(0)
+    }
+
     /// Entry point: parse full expression
     fn parse_expression(&mut self) -> Result<i64, ArithmeticError> {
+        Ok(self.parse_ternary()?.value())
+    }
+
+    /// Parse expression returning LValue (for internal use)
+    fn parse_expression_lvalue(&mut self) -> Result<LValue, ArithmeticError> {
         self.parse_ternary()
     }
 
     /// Level 1: Ternary conditional (? :) - lowest precedence
-    fn parse_ternary(&mut self) -> Result<i64, ArithmeticError> {
+    fn parse_ternary(&mut self) -> Result<LValue, ArithmeticError> {
         let condition = self.parse_assignment()?;
 
         if matches!(self.current(), Some(Token::Question)) {
@@ -358,19 +407,24 @@ impl<'a> Parser<'a> {
             }
             self.advance();
             let false_value = self.parse_ternary()?;
-            Ok(if condition != 0 { true_value } else { false_value })
+            // Ternary result is not an lvalue
+            Ok(LValue::Value(if condition.value() != 0 {
+                true_value.value()
+            } else {
+                false_value.value()
+            }))
         } else {
             Ok(condition)
         }
     }
 
     /// Level 2: Assignment operators (=, +=, -=, etc.) - right associative
-    fn parse_assignment(&mut self) -> Result<i64, ArithmeticError> {
+    fn parse_assignment(&mut self) -> Result<LValue, ArithmeticError> {
         let left = self.parse_logical_or()?;
 
         // Check for assignment operators
-        if let Some(token) = self.current() {
-            let op = match token {
+        if let Some(token) = self.current().cloned() {
+            let op = match &token {
                 Token::Assign => Some("="),
                 Token::PlusAssign => Some("+="),
                 Token::MinusAssign => Some("-="),
@@ -382,42 +436,45 @@ impl<'a> Parser<'a> {
             };
 
             if let Some(op_str) = op {
+                // Check that left is an lvalue (variable)
+                let var_name = match left.var_name() {
+                    Some(name) => name.to_string(),
+                    None => return Err(ArithmeticError::NotAnLvalue),
+                };
+
                 self.advance();
 
-                // Get the variable name from previous token (must be a variable)
-                // Since we already evaluated left, we need to track the variable name
-                // For now, assignments require direct variable syntax
-                // This is a simplification - full bash allows lvalues like a[i]
+                // For assignment, we need the right side value (right associative)
+                let right = self.parse_assignment()?.value();
+                let left_val = left.value();
 
-                // For assignment, we need the right side value
-                let right = self.parse_assignment()?; // Right associative
-
-                // Apply the assignment
-                // Note: This is a simplified version that doesn't handle lvalues properly
-                // A full implementation would need to track lvalue expressions
+                // Compute the result
                 let result = match op_str {
                     "=" => right,
-                    "+=" => left + right,
-                    "-=" => left - right,
-                    "*=" => left * right,
+                    "+=" => left_val + right,
+                    "-=" => left_val - right,
+                    "*=" => left_val * right,
                     "/=" => {
                         if right == 0 {
                             return Err(ArithmeticError::DivisionByZero);
                         }
-                        left / right
+                        left_val / right
                     }
                     "%=" => {
                         if right == 0 {
                             return Err(ArithmeticError::DivisionByZero);
                         }
-                        left % right
+                        left_val % right
                     }
-                    "**=" => left.pow(right.max(0) as u32),
+                    "**=" => left_val.pow(right.max(0) as u32),
                     _ => unreachable!(),
                 };
 
-                // TODO: Store result back to variable (requires lvalue tracking)
-                return Ok(result);
+                // Store result back to variable
+                self.set_var(&var_name, result);
+
+                // Return as a new lvalue pointing to the same variable with updated value
+                return Ok(LValue::Variable { name: var_name, value: result });
             }
         }
 
@@ -425,239 +482,279 @@ impl<'a> Parser<'a> {
     }
 
     /// Level 3: Logical OR (||)
-    fn parse_logical_or(&mut self) -> Result<i64, ArithmeticError> {
-        let mut left = self.parse_logical_and()?;
+    fn parse_logical_or(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_logical_and()?;
 
-        while matches!(self.current(), Some(Token::LogicalOr)) {
-            self.advance();
-            // Short-circuit: if left is true (non-zero), don't evaluate right
-            if left != 0 {
-                // Still need to parse right side but ignore result
-                let _ = self.parse_logical_and()?;
-                left = 1;
-            } else {
-                let right = self.parse_logical_and()?;
-                left = if right != 0 { 1 } else { 0 };
+        if matches!(self.current(), Some(Token::LogicalOr)) {
+            let mut result = left.value();
+            while matches!(self.current(), Some(Token::LogicalOr)) {
+                self.advance();
+                // Short-circuit: if left is true (non-zero), don't evaluate right
+                if result != 0 {
+                    // Still need to parse right side but ignore result
+                    let _ = self.parse_logical_and()?;
+                    result = 1;
+                } else {
+                    let right = self.parse_logical_and()?.value();
+                    result = if right != 0 { 1 } else { 0 };
+                }
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(left)
     }
 
     /// Level 4: Logical AND (&&)
-    fn parse_logical_and(&mut self) -> Result<i64, ArithmeticError> {
-        let mut left = self.parse_bitwise_or()?;
+    fn parse_logical_and(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_bitwise_or()?;
 
-        while matches!(self.current(), Some(Token::LogicalAnd)) {
-            self.advance();
-            // Short-circuit: if left is false (zero), don't evaluate right
-            if left == 0 {
-                // Still need to parse right side but ignore result
-                let _ = self.parse_bitwise_or()?;
-                left = 0;
-            } else {
-                let right = self.parse_bitwise_or()?;
-                left = if right != 0 { 1 } else { 0 };
+        if matches!(self.current(), Some(Token::LogicalAnd)) {
+            let mut result = left.value();
+            while matches!(self.current(), Some(Token::LogicalAnd)) {
+                self.advance();
+                // Short-circuit: if left is false (zero), don't evaluate right
+                if result == 0 {
+                    // Still need to parse right side but ignore result
+                    let _ = self.parse_bitwise_or()?;
+                    result = 0;
+                } else {
+                    let right = self.parse_bitwise_or()?.value();
+                    result = if right != 0 { 1 } else { 0 };
+                }
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(left)
     }
 
     /// Level 5: Bitwise OR (|)
-    fn parse_bitwise_or(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_bitwise_xor()?;
+    fn parse_bitwise_or(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_bitwise_xor()?;
 
-        while matches!(self.current(), Some(Token::BitwiseOr)) {
-            self.advance();
-            result |= self.parse_bitwise_xor()?;
+        if matches!(self.current(), Some(Token::BitwiseOr)) {
+            let mut result = left.value();
+            while matches!(self.current(), Some(Token::BitwiseOr)) {
+                self.advance();
+                result |= self.parse_bitwise_xor()?.value();
+            }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 6: Bitwise XOR (^)
-    fn parse_bitwise_xor(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_bitwise_and()?;
+    fn parse_bitwise_xor(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_bitwise_and()?;
 
-        while matches!(self.current(), Some(Token::BitwiseXor)) {
-            self.advance();
-            result ^= self.parse_bitwise_and()?;
+        if matches!(self.current(), Some(Token::BitwiseXor)) {
+            let mut result = left.value();
+            while matches!(self.current(), Some(Token::BitwiseXor)) {
+                self.advance();
+                result ^= self.parse_bitwise_and()?.value();
+            }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 7: Bitwise AND (&)
-    fn parse_bitwise_and(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_equality()?;
+    fn parse_bitwise_and(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_equality()?;
 
-        while matches!(self.current(), Some(Token::BitwiseAnd)) {
-            self.advance();
-            result &= self.parse_equality()?;
+        if matches!(self.current(), Some(Token::BitwiseAnd)) {
+            let mut result = left.value();
+            while matches!(self.current(), Some(Token::BitwiseAnd)) {
+                self.advance();
+                result &= self.parse_equality()?.value();
+            }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 8: Equality (==, !=)
-    fn parse_equality(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_relational()?;
+    fn parse_equality(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_relational()?;
 
-        while let Some(token) = self.current() {
-            match token {
-                Token::Equal => {
-                    self.advance();
-                    let right = self.parse_relational()?;
-                    result = if result == right { 1 } else { 0 };
+        if matches!(self.current(), Some(Token::Equal) | Some(Token::NotEqual)) {
+            let mut result = left.value();
+            while let Some(token) = self.current().cloned() {
+                match token {
+                    Token::Equal => {
+                        self.advance();
+                        let right = self.parse_relational()?.value();
+                        result = if result == right { 1 } else { 0 };
+                    }
+                    Token::NotEqual => {
+                        self.advance();
+                        let right = self.parse_relational()?.value();
+                        result = if result != right { 1 } else { 0 };
+                    }
+                    _ => break,
                 }
-                Token::NotEqual => {
-                    self.advance();
-                    let right = self.parse_relational()?;
-                    result = if result != right { 1 } else { 0 };
-                }
-                _ => break,
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 9: Relational (<, >, <=, >=)
-    fn parse_relational(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_shift()?;
+    fn parse_relational(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_shift()?;
 
-        while let Some(token) = self.current() {
-            match token {
-                Token::Less => {
-                    self.advance();
-                    let right = self.parse_shift()?;
-                    result = if result < right { 1 } else { 0 };
+        if matches!(self.current(), Some(Token::Less) | Some(Token::Greater) | Some(Token::LessEqual) | Some(Token::GreaterEqual)) {
+            let mut result = left.value();
+            while let Some(token) = self.current().cloned() {
+                match token {
+                    Token::Less => {
+                        self.advance();
+                        let right = self.parse_shift()?.value();
+                        result = if result < right { 1 } else { 0 };
+                    }
+                    Token::Greater => {
+                        self.advance();
+                        let right = self.parse_shift()?.value();
+                        result = if result > right { 1 } else { 0 };
+                    }
+                    Token::LessEqual => {
+                        self.advance();
+                        let right = self.parse_shift()?.value();
+                        result = if result <= right { 1 } else { 0 };
+                    }
+                    Token::GreaterEqual => {
+                        self.advance();
+                        let right = self.parse_shift()?.value();
+                        result = if result >= right { 1 } else { 0 };
+                    }
+                    _ => break,
                 }
-                Token::Greater => {
-                    self.advance();
-                    let right = self.parse_shift()?;
-                    result = if result > right { 1 } else { 0 };
-                }
-                Token::LessEqual => {
-                    self.advance();
-                    let right = self.parse_shift()?;
-                    result = if result <= right { 1 } else { 0 };
-                }
-                Token::GreaterEqual => {
-                    self.advance();
-                    let right = self.parse_shift()?;
-                    result = if result >= right { 1 } else { 0 };
-                }
-                _ => break,
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 10: Bitwise shift (<<, >>)
-    fn parse_shift(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_additive()?;
+    fn parse_shift(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_additive()?;
 
-        while let Some(token) = self.current() {
-            match token {
-                Token::LeftShift => {
-                    self.advance();
-                    let right = self.parse_additive()?;
-                    result = result.wrapping_shl(right.max(0) as u32);
+        if matches!(self.current(), Some(Token::LeftShift) | Some(Token::RightShift)) {
+            let mut result = left.value();
+            while let Some(token) = self.current().cloned() {
+                match token {
+                    Token::LeftShift => {
+                        self.advance();
+                        let right = self.parse_additive()?.value();
+                        result = result.wrapping_shl(right.max(0) as u32);
+                    }
+                    Token::RightShift => {
+                        self.advance();
+                        let right = self.parse_additive()?.value();
+                        result = result.wrapping_shr(right.max(0) as u32);
+                    }
+                    _ => break,
                 }
-                Token::RightShift => {
-                    self.advance();
-                    let right = self.parse_additive()?;
-                    result = result.wrapping_shr(right.max(0) as u32);
-                }
-                _ => break,
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 11: Addition and subtraction (+, -)
-    fn parse_additive(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_multiplicative()?;
+    fn parse_additive(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_multiplicative()?;
 
-        while let Some(token) = self.current() {
-            match token {
-                Token::Plus => {
-                    self.advance();
-                    result += self.parse_multiplicative()?;
+        if matches!(self.current(), Some(Token::Plus) | Some(Token::Minus)) {
+            let mut result = left.value();
+            while let Some(token) = self.current().cloned() {
+                match token {
+                    Token::Plus => {
+                        self.advance();
+                        result += self.parse_multiplicative()?.value();
+                    }
+                    Token::Minus => {
+                        self.advance();
+                        result -= self.parse_multiplicative()?.value();
+                    }
+                    _ => break,
                 }
-                Token::Minus => {
-                    self.advance();
-                    result -= self.parse_multiplicative()?;
-                }
-                _ => break,
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 12: Multiplication, division, modulo (*, /, %)
-    fn parse_multiplicative(&mut self) -> Result<i64, ArithmeticError> {
-        let mut result = self.parse_power()?;
+    fn parse_multiplicative(&mut self) -> Result<LValue, ArithmeticError> {
+        let left = self.parse_power()?;
 
-        while let Some(token) = self.current() {
-            match token {
-                Token::Multiply => {
-                    self.advance();
-                    result *= self.parse_power()?;
-                }
-                Token::Divide => {
-                    self.advance();
-                    let divisor = self.parse_power()?;
-                    if divisor == 0 {
-                        return Err(ArithmeticError::DivisionByZero);
+        if matches!(self.current(), Some(Token::Multiply) | Some(Token::Divide) | Some(Token::Modulo)) {
+            let mut result = left.value();
+            while let Some(token) = self.current().cloned() {
+                match token {
+                    Token::Multiply => {
+                        self.advance();
+                        result *= self.parse_power()?.value();
                     }
-                    result /= divisor;
-                }
-                Token::Modulo => {
-                    self.advance();
-                    let divisor = self.parse_power()?;
-                    if divisor == 0 {
-                        return Err(ArithmeticError::DivisionByZero);
+                    Token::Divide => {
+                        self.advance();
+                        let divisor = self.parse_power()?.value();
+                        if divisor == 0 {
+                            return Err(ArithmeticError::DivisionByZero);
+                        }
+                        result /= divisor;
                     }
-                    result %= divisor;
+                    Token::Modulo => {
+                        self.advance();
+                        let divisor = self.parse_power()?.value();
+                        if divisor == 0 {
+                            return Err(ArithmeticError::DivisionByZero);
+                        }
+                        result %= divisor;
+                    }
+                    _ => break,
                 }
-                _ => break,
             }
+            Ok(LValue::Value(result))
+        } else {
+            Ok(left)
         }
-
-        Ok(result)
     }
 
     /// Level 13: Power (**) - right associative
-    fn parse_power(&mut self) -> Result<i64, ArithmeticError> {
+    fn parse_power(&mut self) -> Result<LValue, ArithmeticError> {
         let base = self.parse_unary()?;
 
         if matches!(self.current(), Some(Token::Power)) {
             self.advance();
-            let exponent = self.parse_power()?; // Right associative
-            Ok(base.pow(exponent.max(0) as u32))
+            let exponent = self.parse_power()?.value(); // Right associative
+            Ok(LValue::Value(base.value().pow(exponent.max(0) as u32)))
         } else {
             Ok(base)
         }
     }
 
     /// Level 14: Unary operators (!, ~, unary +, unary -)
-    fn parse_unary(&mut self) -> Result<i64, ArithmeticError> {
-        match self.current() {
+    fn parse_unary(&mut self) -> Result<LValue, ArithmeticError> {
+        match self.current().cloned() {
             Some(Token::LogicalNot) => {
                 self.advance();
-                let operand = self.parse_unary()?;
-                Ok(if operand == 0 { 1 } else { 0 })
+                let operand = self.parse_unary()?.value();
+                Ok(LValue::Value(if operand == 0 { 1 } else { 0 }))
             }
             Some(Token::BitwiseNot) => {
                 self.advance();
-                let operand = self.parse_unary()?;
-                Ok(!operand)
+                let operand = self.parse_unary()?.value();
+                Ok(LValue::Value(!operand))
             }
             Some(Token::Plus) => {
                 self.advance();
@@ -665,75 +762,97 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Minus) => {
                 self.advance();
-                let operand = self.parse_unary()?;
-                Ok(-operand)
+                let operand = self.parse_unary()?.value();
+                Ok(LValue::Value(-operand))
             }
             Some(Token::Increment) => {
-                // Pre-increment
+                // Pre-increment: ++x returns x+1 and stores x+1
                 self.advance();
-                // TODO: Implement proper pre-increment with lvalue
-                let value = self.parse_postfix()?;
-                Ok(value + 1)
+                let operand = self.parse_postfix()?;
+                match operand.var_name() {
+                    Some(name) => {
+                        let new_value = operand.value() + 1;
+                        self.set_var(name, new_value);
+                        Ok(LValue::Variable { name: name.to_string(), value: new_value })
+                    }
+                    None => Err(ArithmeticError::NotAnLvalue),
+                }
             }
             Some(Token::Decrement) => {
-                // Pre-decrement
+                // Pre-decrement: --x returns x-1 and stores x-1
                 self.advance();
-                // TODO: Implement proper pre-decrement with lvalue
-                let value = self.parse_postfix()?;
-                Ok(value - 1)
+                let operand = self.parse_postfix()?;
+                match operand.var_name() {
+                    Some(name) => {
+                        let new_value = operand.value() - 1;
+                        self.set_var(name, new_value);
+                        Ok(LValue::Variable { name: name.to_string(), value: new_value })
+                    }
+                    None => Err(ArithmeticError::NotAnLvalue),
+                }
             }
             _ => self.parse_postfix(),
         }
     }
 
     /// Level 15: Postfix operators (++, --)
-    fn parse_postfix(&mut self) -> Result<i64, ArithmeticError> {
-        let result = self.parse_primary()?;
+    fn parse_postfix(&mut self) -> Result<LValue, ArithmeticError> {
+        let operand = self.parse_primary()?;
 
         // Check for postfix operators
         match self.current() {
             Some(Token::Increment) => {
                 self.advance();
-                // TODO: Implement proper post-increment with lvalue
-                // For now, return current value (post-increment returns old value)
-                Ok(result)
+                // Post-increment: x++ returns old value, stores x+1
+                match operand.var_name() {
+                    Some(name) => {
+                        let old_value = operand.value();
+                        self.set_var(name, old_value + 1);
+                        // Return the old value (as a non-lvalue since it's the pre-increment value)
+                        Ok(LValue::Value(old_value))
+                    }
+                    None => Err(ArithmeticError::NotAnLvalue),
+                }
             }
             Some(Token::Decrement) => {
                 self.advance();
-                // TODO: Implement proper post-decrement with lvalue
-                // For now, return current value (post-decrement returns old value)
-                Ok(result)
+                // Post-decrement: x-- returns old value, stores x-1
+                match operand.var_name() {
+                    Some(name) => {
+                        let old_value = operand.value();
+                        self.set_var(name, old_value - 1);
+                        // Return the old value (as a non-lvalue since it's the pre-decrement value)
+                        Ok(LValue::Value(old_value))
+                    }
+                    None => Err(ArithmeticError::NotAnLvalue),
+                }
             }
-            _ => Ok(result),
+            _ => Ok(operand),
         }
     }
 
     /// Level 16: Primary expressions (numbers, variables, parenthesized expressions)
-    fn parse_primary(&mut self) -> Result<i64, ArithmeticError> {
-        match self.current() {
+    fn parse_primary(&mut self) -> Result<LValue, ArithmeticError> {
+        match self.current().cloned() {
             Some(Token::Number(n)) => {
-                let value = *n;
                 self.advance();
-                Ok(value)
+                Ok(LValue::Value(n))
             }
             Some(Token::Variable(name)) => {
-                let name = name.clone();
                 self.advance();
                 // Look up variable value
-                let value = self.context.get_var(&name)
-                    .unwrap_or("0")
-                    .parse::<i64>()
-                    .unwrap_or(0);
-                Ok(value)
+                let value = self.get_var(&name);
+                Ok(LValue::Variable { name, value })
             }
             Some(Token::LeftParen) => {
                 self.advance();
-                let result = self.parse_expression()?;
+                let result = self.parse_expression_lvalue()?;
                 if !matches!(self.current(), Some(Token::RightParen)) {
                     return Err(ArithmeticError::ParseError("Expected ')'".to_string()));
                 }
                 self.advance();
-                Ok(result)
+                // Parenthesized expressions are not lvalues (even if they contain a single variable)
+                Ok(LValue::Value(result.value()))
             }
             _ => Err(ArithmeticError::ParseError("Unexpected token".to_string())),
         }
@@ -791,5 +910,192 @@ mod tests {
     fn test_precedence() {
         let mut ctx = Context::empty();
         assert_eq!(evaluate_arithmetic("2 + 3 * 4", &mut ctx).unwrap(), 14);
+    }
+
+    // Lvalue tests
+
+    #[test]
+    fn test_simple_assignment() {
+        let mut ctx = Context::empty();
+        // x = 5 should set x to 5 and return 5
+        assert_eq!(evaluate_arithmetic("x = 5", &mut ctx).unwrap(), 5);
+        assert_eq!(ctx.get_var("x"), Some("5"));
+    }
+
+    #[test]
+    fn test_compound_assignment_add() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "10").unwrap();
+        // x += 3 should set x to 13 and return 13
+        assert_eq!(evaluate_arithmetic("x += 3", &mut ctx).unwrap(), 13);
+        assert_eq!(ctx.get_var("x"), Some("13"));
+    }
+
+    #[test]
+    fn test_compound_assignment_sub() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "10").unwrap();
+        assert_eq!(evaluate_arithmetic("x -= 3", &mut ctx).unwrap(), 7);
+        assert_eq!(ctx.get_var("x"), Some("7"));
+    }
+
+    #[test]
+    fn test_compound_assignment_mul() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "10").unwrap();
+        assert_eq!(evaluate_arithmetic("x *= 3", &mut ctx).unwrap(), 30);
+        assert_eq!(ctx.get_var("x"), Some("30"));
+    }
+
+    #[test]
+    fn test_compound_assignment_div() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "10").unwrap();
+        assert_eq!(evaluate_arithmetic("x /= 2", &mut ctx).unwrap(), 5);
+        assert_eq!(ctx.get_var("x"), Some("5"));
+    }
+
+    #[test]
+    fn test_compound_assignment_mod() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "10").unwrap();
+        assert_eq!(evaluate_arithmetic("x %= 3", &mut ctx).unwrap(), 1);
+        assert_eq!(ctx.get_var("x"), Some("1"));
+    }
+
+    #[test]
+    fn test_pre_increment() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // ++x should increment x and return the new value
+        assert_eq!(evaluate_arithmetic("++x", &mut ctx).unwrap(), 6);
+        assert_eq!(ctx.get_var("x"), Some("6"));
+    }
+
+    #[test]
+    fn test_pre_decrement() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // --x should decrement x and return the new value
+        assert_eq!(evaluate_arithmetic("--x", &mut ctx).unwrap(), 4);
+        assert_eq!(ctx.get_var("x"), Some("4"));
+    }
+
+    #[test]
+    fn test_post_increment() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // x++ should return the old value but increment x
+        assert_eq!(evaluate_arithmetic("x++", &mut ctx).unwrap(), 5);
+        assert_eq!(ctx.get_var("x"), Some("6"));
+    }
+
+    #[test]
+    fn test_post_decrement() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // x-- should return the old value but decrement x
+        assert_eq!(evaluate_arithmetic("x--", &mut ctx).unwrap(), 5);
+        assert_eq!(ctx.get_var("x"), Some("4"));
+    }
+
+    #[test]
+    fn test_chained_assignment() {
+        let mut ctx = Context::empty();
+        // a = b = c = 5 should set all three to 5
+        assert_eq!(evaluate_arithmetic("a = b = c = 5", &mut ctx).unwrap(), 5);
+        assert_eq!(ctx.get_var("a"), Some("5"));
+        assert_eq!(ctx.get_var("b"), Some("5"));
+        assert_eq!(ctx.get_var("c"), Some("5"));
+    }
+
+    #[test]
+    fn test_increment_in_expression() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // 2 + ++x should be 2 + 6 = 8
+        assert_eq!(evaluate_arithmetic("2 + ++x", &mut ctx).unwrap(), 8);
+        assert_eq!(ctx.get_var("x"), Some("6"));
+    }
+
+    #[test]
+    fn test_post_increment_in_expression() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap();
+        // 2 + x++ should be 2 + 5 = 7 (x becomes 6 after)
+        assert_eq!(evaluate_arithmetic("2 + x++", &mut ctx).unwrap(), 7);
+        assert_eq!(ctx.get_var("x"), Some("6"));
+    }
+
+    #[test]
+    fn test_assignment_not_lvalue_error() {
+        let mut ctx = Context::empty();
+        // (x) is not an lvalue, so (x) = 5 should fail
+        let result = evaluate_arithmetic("(x) = 5", &mut ctx);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_increment_not_lvalue_error() {
+        let mut ctx = Context::empty();
+        // ++5 should fail (5 is not an lvalue)
+        let result = evaluate_arithmetic("++5", &mut ctx);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_power_assignment() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "2").unwrap();
+        assert_eq!(evaluate_arithmetic("x **= 3", &mut ctx).unwrap(), 8);
+        assert_eq!(ctx.get_var("x"), Some("8"));
+    }
+
+    #[test]
+    fn test_ternary_operator() {
+        let mut ctx = Context::empty();
+        assert_eq!(evaluate_arithmetic("1 ? 10 : 20", &mut ctx).unwrap(), 10);
+        assert_eq!(evaluate_arithmetic("0 ? 10 : 20", &mut ctx).unwrap(), 20);
+    }
+
+    #[test]
+    fn test_comparison_operators() {
+        let mut ctx = Context::empty();
+        assert_eq!(evaluate_arithmetic("5 < 10", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("10 < 5", &mut ctx).unwrap(), 0);
+        assert_eq!(evaluate_arithmetic("5 == 5", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("5 != 5", &mut ctx).unwrap(), 0);
+        assert_eq!(evaluate_arithmetic("5 <= 5", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("5 >= 5", &mut ctx).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_logical_operators() {
+        let mut ctx = Context::empty();
+        assert_eq!(evaluate_arithmetic("1 && 1", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("1 && 0", &mut ctx).unwrap(), 0);
+        assert_eq!(evaluate_arithmetic("0 || 1", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("0 || 0", &mut ctx).unwrap(), 0);
+        assert_eq!(evaluate_arithmetic("!0", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("!1", &mut ctx).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_bitwise_operators() {
+        let mut ctx = Context::empty();
+        assert_eq!(evaluate_arithmetic("5 & 3", &mut ctx).unwrap(), 1);
+        assert_eq!(evaluate_arithmetic("5 | 3", &mut ctx).unwrap(), 7);
+        assert_eq!(evaluate_arithmetic("5 ^ 3", &mut ctx).unwrap(), 6);
+        assert_eq!(evaluate_arithmetic("~0", &mut ctx).unwrap(), -1);
+        assert_eq!(evaluate_arithmetic("1 << 4", &mut ctx).unwrap(), 16);
+        assert_eq!(evaluate_arithmetic("16 >> 2", &mut ctx).unwrap(), 4);
+    }
+
+    #[test]
+    fn test_power_operator() {
+        let mut ctx = Context::empty();
+        assert_eq!(evaluate_arithmetic("2 ** 10", &mut ctx).unwrap(), 1024);
+        // Right associative: 2 ** 3 ** 2 = 2 ** 9 = 512
+        assert_eq!(evaluate_arithmetic("2 ** 3 ** 2", &mut ctx).unwrap(), 512);
     }
 }
