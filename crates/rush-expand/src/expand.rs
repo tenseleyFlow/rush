@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn test_expand_simple_var() {
         let mut ctx = Context::empty();
-        ctx.set_var("USER", "alice");
+        ctx.set_var("USER", "alice").unwrap();
 
         let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Simple(
             "USER".to_string(),
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn test_expand_mixed_word() {
         let mut ctx = Context::empty();
-        ctx.set_var("NAME", "world");
+        ctx.set_var("NAME", "world").unwrap();
 
         let word = Word::new(vec![
             WordPart::Literal("Hello ".to_string()),
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn test_expand_multiple_words() {
         let mut ctx = Context::empty();
-        ctx.set_var("CMD", "ls");
+        ctx.set_var("CMD", "ls").unwrap();
 
         let words = vec![
             Word::new(vec![WordPart::VarExpansion(VarExpansion::Simple(

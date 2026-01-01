@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_with_variable() {
         let mut ctx = Context::empty();
-        ctx.set_var("x", "10");
+        ctx.set_var("x", "10").unwrap();
         assert_eq!(evaluate_arithmetic("x * 2", &ctx).unwrap(), 20);
     }
 

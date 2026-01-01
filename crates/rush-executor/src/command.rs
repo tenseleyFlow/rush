@@ -706,16 +706,17 @@ fn builtin_readonly(args: &[String], context: &mut rush_expand::Context) -> Exec
             }
 
             // Set value and mark readonly
-            context.set_var(name, value);
+            // Ignore result since we already checked readonly above
+            let _ = context.set_var(name, value);
             context.mark_readonly(name);
         } else {
             // Just VAR (no value) - mark existing variable as readonly
             if !context.is_readonly(var) {
-                context.mark_readonly(var);
                 // If variable doesn't exist, create it with empty value
                 if context.get_var(var).is_none() {
-                    context.set_var(var, "");
+                    let _ = context.set_var(var, "");
                 }
+                context.mark_readonly(var);
             }
         }
     }

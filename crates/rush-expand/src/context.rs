@@ -110,10 +110,18 @@ impl Context {
     }
 
     /// Set a variable (local to this shell)
-    pub fn set_var(&mut self, name: impl Into<String>, value: impl Into<String>) {
+    /// Returns Ok(()) on success, Err with variable name if readonly
+    pub fn set_var(&mut self, name: impl Into<String>, value: impl Into<String>) -> Result<(), String> {
         let name = name.into();
+
+        // Check if readonly
+        if self.is_readonly(&name) {
+            return Err(name);
+        }
+
         let value = value.into();
         self.variables.insert(name, value);
+        Ok(())
     }
 
     /// Get a variable value
@@ -194,7 +202,7 @@ mod tests {
     #[test]
     fn test_set_and_get_var() {
         let mut ctx = Context::empty();
-        ctx.set_var("FOO", "bar");
+        ctx.set_var("FOO", "bar").unwrap();
         assert_eq!(ctx.get_var("FOO"), Some("bar"));
     }
 
@@ -210,7 +218,7 @@ mod tests {
     #[test]
     fn test_unset_var() {
         let mut ctx = Context::empty();
-        ctx.set_var("FOO", "bar");
+        ctx.set_var("FOO", "bar").unwrap();
         assert_eq!(ctx.get_var("FOO"), Some("bar"));
         ctx.unset_var("FOO");
         assert_eq!(ctx.get_var("FOO"), None);

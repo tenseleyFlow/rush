@@ -75,7 +75,12 @@ pub fn execute_for(
     // Execute the loop body for each value
     for value in values {
         // Set the loop variable
-        context.set_var(&for_stmt.var_name, &value);
+        if let Err(name) = context.set_var(&for_stmt.var_name, &value) {
+            return Err(PipelineError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{}: readonly variable", name),
+            )));
+        }
 
         // Execute the loop body
         last_result = execute_command_list(&for_stmt.body, context)?;

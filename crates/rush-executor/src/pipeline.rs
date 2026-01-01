@@ -205,7 +205,14 @@ pub fn execute_simple_with_redirects(
                     std::io::ErrorKind::Other,
                     e.to_string(),
                 )))?;
-            context.set_var(&assignment.name, value.join(" "));
+
+            // Check if readonly
+            if let Err(name) = context.set_var(&assignment.name, value.join(" ")) {
+                return Err(ExecutionError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("{}: readonly variable", name),
+                )));
+            }
         }
     }
 
