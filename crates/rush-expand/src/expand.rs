@@ -262,7 +262,103 @@ fn expand_var(var_exp: &VarExpansion, context: &mut Context) -> Result<String, E
                 None => Ok(String::new()),
             }
         }
+        VarExpansion::Indirect(name) => {
+            // ${!var} - indirect expansion
+            // First get the value of the variable, then use that as a variable name
+            let indirect_name = context.get_var(name).unwrap_or("");
+            if indirect_name.is_empty() {
+                Ok(String::new())
+            } else {
+                Ok(context.get_var(indirect_name).unwrap_or("").to_string())
+            }
+        }
+        VarExpansion::Transform { name, op } => {
+            // ${var@op} - transformation operators
+            let value = context.get_var(name).unwrap_or("");
+            Ok(apply_transform(value, *op))
+        }
     }
+}
+
+/// Apply transformation operator to a value
+fn apply_transform(value: &str, op: char) -> String {
+    match op {
+        'Q' => {
+            // Quote for reuse as input (single-quoted format)
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+        'E' => {
+            // Expand escape sequences like $'...'
+            expand_escapes(value)
+        }
+        'P' => {
+            // Expand as prompt string (simplified - just return value)
+            value.to_string()
+        }
+        'A' => {
+            // Assignment statement format (simplified)
+            value.to_string()
+        }
+        'K' => {
+            // Quote for reuse, associative array format
+            format!("'{}'", value.replace('\'', "'\\''"))
+        }
+        'a' => {
+            // Attributes (simplified - return empty)
+            String::new()
+        }
+        'u' | 'U' => {
+            // Uppercase (U = all, u = first)
+            if op == 'U' {
+                value.to_uppercase()
+            } else {
+                uppercase_first(value)
+            }
+        }
+        'L' => {
+            // Lowercase all
+            value.to_lowercase()
+        }
+        _ => value.to_string(),
+    }
+}
+
+/// Expand escape sequences like \n, \t, etc.
+fn expand_escapes(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                chars.next();
+                match next {
+                    'n' => result.push('\n'),
+                    't' => result.push('\t'),
+                    'r' => result.push('\r'),
+                    '\\' => result.push('\\'),
+                    '\'' => result.push('\''),
+                    '"' => result.push('"'),
+                    '0' => result.push('\0'),
+                    'a' => result.push('\x07'),  // Bell
+                    'b' => result.push('\x08'),  // Backspace
+                    'e' | 'E' => result.push('\x1b'),  // Escape
+                    'f' => result.push('\x0c'),  // Form feed
+                    'v' => result.push('\x0b'),  // Vertical tab
+                    _ => {
+                        result.push('\\');
+                        result.push(next);
+                    }
+                }
+            } else {
+                result.push('\\');
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 /// Remove prefix from string based on pattern
@@ -536,5 +632,102 @@ mod tests {
 
         let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "Result: success");
+    }
+
+    #[test]
+    fn test_indirect_expansion() {
+        let mut ctx = Context::empty();
+        ctx.set_var("ptr", "target").unwrap();
+        ctx.set_var("target", "hello world").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Indirect(
+            "ptr".to_string(),
+        ))]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_indirect_expansion_missing() {
+        let mut ctx = Context::empty();
+        ctx.set_var("ptr", "nonexistent").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Indirect(
+            "ptr".to_string(),
+        ))]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_transform_quote() {
+        let mut ctx = Context::empty();
+        ctx.set_var("msg", "hello world").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Transform {
+            name: "msg".to_string(),
+            op: 'Q',
+        })]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "'hello world'");
+    }
+
+    #[test]
+    fn test_transform_quote_with_apostrophe() {
+        let mut ctx = Context::empty();
+        ctx.set_var("msg", "don't stop").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Transform {
+            name: "msg".to_string(),
+            op: 'Q',
+        })]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "'don'\\''t stop'");
+    }
+
+    #[test]
+    fn test_transform_uppercase() {
+        let mut ctx = Context::empty();
+        ctx.set_var("name", "hello").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Transform {
+            name: "name".to_string(),
+            op: 'U',
+        })]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "HELLO");
+    }
+
+    #[test]
+    fn test_transform_lowercase() {
+        let mut ctx = Context::empty();
+        ctx.set_var("name", "HELLO").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Transform {
+            name: "name".to_string(),
+            op: 'L',
+        })]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_transform_escape() {
+        let mut ctx = Context::empty();
+        ctx.set_var("text", "hello\\nworld").unwrap();
+
+        let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Transform {
+            name: "text".to_string(),
+            op: 'E',
+        })]);
+
+        let result = expand_word(&word, &mut ctx).unwrap();
+        assert_eq!(result, "hello\nworld");
     }
 }

@@ -344,13 +344,23 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
     }
 
     // Check for ${!arr[@]} or ${!arr[*]} - array indices
-    if original.starts_with("${!") {
+    if original.starts_with("${!") && (original.contains("[@]") || original.contains("[*]")) {
         let mut inner = pair.into_inner();
         let var_name = inner.next()
             .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
             .as_str()
             .to_string();
         return Ok(VarExpansion::ArrayIndices(var_name));
+    }
+
+    // Check for ${!var} - indirect expansion (without array subscript)
+    if original.starts_with("${!") && !original.contains('[') {
+        let mut inner = pair.into_inner();
+        let var_name = inner.next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_expansion))?
+            .as_str()
+            .to_string();
+        return Ok(VarExpansion::Indirect(var_name));
     }
 
     // Check for ${#VAR} - variable length
@@ -538,6 +548,13 @@ fn parse_var_modifier(var_name: &str, pair: pest::iterators::Pair<Rule>) -> Resu
         return Ok(VarExpansion::LowercaseAll(var_name.to_string()));
     } else if modifier_text == "," {
         return Ok(VarExpansion::LowercaseFirst(var_name.to_string()));
+    } else if modifier_text.starts_with('@') && modifier_text.len() == 2 {
+        // ${VAR@Q}, ${VAR@E}, etc.
+        let op = modifier_text.chars().nth(1).unwrap();
+        return Ok(VarExpansion::Transform {
+            name: var_name.to_string(),
+            op,
+        });
     }
 
     Err(ParseError::UnexpectedRule(Rule::var_modifier))

@@ -175,6 +175,7 @@ extglob_content = { (!(")" | NEWLINE) ~ ANY)* }
 var_expansion = {
     "${" ~ "#" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${#arr[@]} - array length
     | "${" ~ "!" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${!arr[@]} - array indices
+    | "${" ~ "!" ~ var_name ~ "}"  // ${!VAR} - indirect expansion
     | "${" ~ "#" ~ var_name ~ "}"  // ${#VAR} - variable length
     | "${" ~ var_name ~ "[" ~ array_subscript ~ "]" ~ "}"  // ${arr[index]} - array element
     | "${" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${arr[@]} or ${arr[*]} - all elements
@@ -208,7 +209,11 @@ var_modifier = {
     | "^"   // ${VAR^} - uppercase first
     | ",,"  // ${VAR,,} - lowercase all
     | ","   // ${VAR,} - lowercase first
+    | "@" ~ transform_op  // ${VAR@Q}, ${VAR@E}, etc. - transformation
 }
+
+// Transformation operators for ${VAR@op}
+transform_op = @{ "Q" | "E" | "P" | "A" | "K" | "a" | "u" | "L" | "U" }
 
 // Pattern for prefix/suffix removal (can contain /)
 prefix_suffix_pattern = @{ (!("}" | NEWLINE) ~ ANY)+ }

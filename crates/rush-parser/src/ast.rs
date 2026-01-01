@@ -261,6 +261,10 @@ pub enum VarExpansion {
     ArrayLength(String),
     /// Array indices: ${!arr[@]}
     ArrayIndices(String),
+    /// Indirect expansion: ${!var}
+    Indirect(String),
+    /// Transformation: ${var@Q}, ${var@E}, etc.
+    Transform { name: String, op: char },
 }
 
 impl Pipeline {
