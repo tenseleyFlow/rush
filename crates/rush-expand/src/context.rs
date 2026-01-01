@@ -7,16 +7,22 @@ use rush_job::JobList;
 /// Shell options that can be set with the 'set' builtin
 #[derive(Debug, Clone)]
 pub struct ShellOptions {
-    /// Exit immediately if a command exits with a non-zero status
+    /// Exit immediately if a command exits with a non-zero status (set -e)
     pub errexit: bool,
-    /// Print commands before executing them
+    /// Print commands before executing them (set -x)
     pub xtrace: bool,
-    /// Treat unset variables as an error
+    /// Treat unset variables as an error (set -u)
     pub nounset: bool,
-    /// Pipeline fails if any command fails (not just the last)
+    /// Pipeline fails if any command fails (not just the last) (set -o pipefail)
     pub pipefail: bool,
-    /// Disable filename expansion (globbing)
+    /// Disable filename expansion (globbing) (set -f)
     pub noglob: bool,
+    /// Globs that match nothing expand to nothing (shopt -s nullglob)
+    pub nullglob: bool,
+    /// Include dotfiles in glob expansion (shopt -s dotglob)
+    pub dotglob: bool,
+    /// Extended glob patterns (shopt -s extglob)
+    pub extglob: bool,
 }
 
 impl Default for ShellOptions {
@@ -27,6 +33,9 @@ impl Default for ShellOptions {
             nounset: false,
             pipefail: false,
             noglob: false,
+            nullglob: false,
+            dotglob: false,
+            extglob: false,
         }
     }
 }

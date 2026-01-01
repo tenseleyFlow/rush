@@ -175,6 +175,7 @@ pub(crate) fn execute_builtin(
         "unalias" => Some(builtin_unalias(args, context)),
         "trap" => Some(builtin_trap(args, context)),
         "set" => Some(builtin_set(args, context)),
+        "shopt" => Some(builtin_shopt(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -443,6 +444,104 @@ fn builtin_set(args: &[String], context: &mut rush_expand::Context) -> Execution
     }
 
     success_result()
+}
+
+/// shopt builtin - Set or display bash-specific shell options
+fn builtin_shopt(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut print_format = false;
+    let mut set_option = false;
+    let mut unset_option = false;
+    let mut quiet = false;
+    let mut options_to_process = Vec::new();
+
+    // Parse arguments
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-p" {
+            print_format = true;
+        } else if arg == "-s" {
+            set_option = true;
+        } else if arg == "-u" {
+            unset_option = true;
+        } else if arg == "-q" {
+            quiet = true;
+        } else if arg.starts_with('-') {
+            eprintln!("shopt: {}: invalid option", arg);
+            return error_result();
+        } else {
+            options_to_process.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    // No arguments: list all options
+    if options_to_process.is_empty() && !print_format {
+        println!("nullglob\t{}", if context.options.nullglob { "on" } else { "off" });
+        println!("dotglob\t\t{}", if context.options.dotglob { "on" } else { "off" });
+        println!("extglob\t\t{}", if context.options.extglob { "on" } else { "off" });
+        return success_result();
+    }
+
+    // -p: print in reusable format
+    if print_format && options_to_process.is_empty() {
+        println!("shopt -{} nullglob", if context.options.nullglob { "s" } else { "u" });
+        println!("shopt -{} dotglob", if context.options.dotglob { "s" } else { "u" });
+        println!("shopt -{} extglob", if context.options.extglob { "s" } else { "u" });
+        return success_result();
+    }
+
+    // Process specific options
+    let mut had_error = false;
+    for opt_name in &options_to_process {
+        match opt_name.as_str() {
+            "nullglob" => {
+                if set_option {
+                    context.options.nullglob = true;
+                } else if unset_option {
+                    context.options.nullglob = false;
+                } else if print_format {
+                    println!("shopt -{} nullglob", if context.options.nullglob { "s" } else { "u" });
+                } else if !quiet {
+                    println!("nullglob\t{}", if context.options.nullglob { "on" } else { "off" });
+                }
+            }
+            "dotglob" => {
+                if set_option {
+                    context.options.dotglob = true;
+                } else if unset_option {
+                    context.options.dotglob = false;
+                } else if print_format {
+                    println!("shopt -{} dotglob", if context.options.dotglob { "s" } else { "u" });
+                } else if !quiet {
+                    println!("dotglob\t\t{}", if context.options.dotglob { "on" } else { "off" });
+                }
+            }
+            "extglob" => {
+                if set_option {
+                    context.options.extglob = true;
+                } else if unset_option {
+                    context.options.extglob = false;
+                } else if print_format {
+                    println!("shopt -{} extglob", if context.options.extglob { "s" } else { "u" });
+                } else if !quiet {
+                    println!("extglob\t\t{}", if context.options.extglob { "on" } else { "off" });
+                }
+            }
+            _ => {
+                if !quiet {
+                    eprintln!("shopt: {}: invalid shell option name", opt_name);
+                }
+                had_error = true;
+            }
+        }
+    }
+
+    if had_error {
+        error_result()
+    } else {
+        success_result()
+    }
 }
 
 #[cfg(unix)]
