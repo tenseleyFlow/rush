@@ -182,6 +182,33 @@ pub(crate) fn execute_builtin(
         "export" => Some(builtin_export(args, context)),
         "unset" => Some(builtin_unset(args, context)),
         "readonly" => Some(builtin_readonly(args, context)),
+        "local" => Some(builtin_local(args, context)),
+        "read" => Some(builtin_read(args, context)),
+        "shift" => Some(builtin_shift(args, context)),
+        "wait" => Some(builtin_wait(args, context)),
+        "kill" => Some(builtin_kill(args, context)),
+        "times" => Some(builtin_times(args, context)),
+        "umask" => Some(builtin_umask(args, context)),
+        "hash" => Some(builtin_hash(args, context)),
+        "getopts" => Some(builtin_getopts(args, context)),
+        "exec" => {
+            match builtin_exec(args, context) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    eprintln!("exec: {}", err);
+                    Some(error_result())
+                }
+            }
+        }
+        "command" => {
+            match builtin_command(args, context) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    eprintln!("command: {}", err);
+                    Some(error_result())
+                }
+            }
+        }
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -197,7 +224,7 @@ pub(crate) fn execute_builtin(
     }
 }
 
-fn exit_code_to_result(code: i32) -> ExecutionResult {
+pub(crate) fn exit_code_to_result(code: i32) -> ExecutionResult {
     #[cfg(unix)]
     {
         ExecutionResult {
@@ -722,6 +749,845 @@ fn builtin_readonly(args: &[String], context: &mut rush_expand::Context) -> Exec
     }
 
     success_result()
+}
+
+/// local builtin - Create function-local variables
+fn builtin_local(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    if args.is_empty() {
+        // No arguments - success (bash behavior)
+        return success_result();
+    }
+
+    // Process each variable assignment
+    for arg in args {
+        if arg.starts_with('-') {
+            eprintln!("local: {}: invalid option", arg);
+            return error_result();
+        }
+
+        if let Some(eq_pos) = arg.find('=') {
+            // VAR=value format
+            let name = &arg[..eq_pos];
+            let value = &arg[eq_pos + 1..];
+
+            // Set as local variable in current function scope
+            if let Err(var_name) = context.set_local_var(name, value) {
+                eprintln!("local: {}: readonly variable", var_name);
+                return error_result();
+            }
+        } else {
+            // Just VAR (no value) - create with empty value
+            if let Err(var_name) = context.set_local_var(arg, "") {
+                eprintln!("local: {}: readonly variable", var_name);
+                return error_result();
+            }
+        }
+    }
+
+    success_result()
+}
+
+/// read builtin - Read a line from stdin into variables
+fn builtin_read(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    use std::io::{self, BufRead, Write};
+
+    let mut raw_mode = false;
+    let mut prompt = String::new();
+    let mut var_names = Vec::new();
+
+    // Parse arguments
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-r" {
+            raw_mode = true;
+        } else if arg == "-p" {
+            // Next argument is the prompt
+            i += 1;
+            if i >= args.len() {
+                eprintln!("read: -p: option requires an argument");
+                return error_result();
+            }
+            prompt = args[i].clone();
+        } else if arg.starts_with('-') {
+            eprintln!("read: {}: invalid option", arg);
+            return error_result();
+        } else {
+            var_names.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    // Default to REPLY if no variable names given
+    if var_names.is_empty() {
+        var_names.push("REPLY".to_string());
+    }
+
+    // Display prompt if provided
+    if !prompt.is_empty() {
+        print!("{}", prompt);
+        let _ = io::stdout().flush();
+    }
+
+    // Read line from stdin
+    let stdin = io::stdin();
+    let mut line = String::new();
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) => {
+            // EOF
+            return error_result();
+        }
+        Ok(_) => {
+            // Remove trailing newline
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+        }
+        Err(_) => {
+            return error_result();
+        }
+    }
+
+    // Handle backslash continuation (unless in raw mode)
+    if !raw_mode {
+        while line.ends_with('\\') {
+            line.pop(); // Remove backslash
+            let mut continuation = String::new();
+            match stdin.lock().read_line(&mut continuation) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    if continuation.ends_with('\n') {
+                        continuation.pop();
+                        if continuation.ends_with('\r') {
+                            continuation.pop();
+                        }
+                    }
+                    line.push_str(&continuation);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    // Get IFS for splitting (default to whitespace)
+    let ifs = context.get_var("IFS").unwrap_or(" \t\n");
+    let ifs_chars: Vec<char> = ifs.chars().collect();
+
+    // Split the line and assign to variables
+    if var_names.len() == 1 {
+        // Single variable gets entire line
+        let _ = context.set_var(&var_names[0], line);
+    } else {
+        // Multiple variables: split by IFS
+        let words: Vec<&str> = if ifs_chars.is_empty() {
+            // Empty IFS means split every character
+            vec![line.as_str()]
+        } else {
+            // Split by IFS characters
+            line.split(|c: char| ifs_chars.contains(&c))
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+
+        // Assign words to variables
+        for (i, var_name) in var_names.iter().enumerate() {
+            if i < words.len() {
+                if i == var_names.len() - 1 {
+                    // Last variable gets all remaining words
+                    let remaining = words[i..].join(" ");
+                    let _ = context.set_var(var_name, remaining);
+                } else {
+                    let _ = context.set_var(var_name, words[i]);
+                }
+            } else {
+                // No more input, set to empty
+                let _ = context.set_var(var_name, "");
+            }
+        }
+    }
+
+    success_result()
+}
+
+/// shift builtin - Shift positional parameters
+fn builtin_shift(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // Parse the count (default 1)
+    let count = if args.is_empty() {
+        1
+    } else {
+        match args[0].parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("shift: {}: numeric argument required", args[0]);
+                return error_result();
+            }
+        }
+    };
+
+    // Check if we have enough parameters to shift
+    if count > context.positional_params.len() {
+        eprintln!("shift: shift count ({}) exceeds number of positional parameters ({})",
+                  count, context.positional_params.len());
+        return error_result();
+    }
+
+    // Shift the parameters
+    context.positional_params.drain(0..count);
+
+    success_result()
+}
+
+/// command builtin - Execute command bypassing functions and aliases
+fn builtin_command(args: &[String], context: &mut rush_expand::Context) -> Result<ExecutionResult, String> {
+    let mut verbose = false;
+    let mut very_verbose = false;
+    let mut use_default_path = false;
+    let mut cmd_args = Vec::new();
+
+    // Parse arguments
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-v" {
+            verbose = true;
+        } else if arg == "-V" {
+            very_verbose = true;
+        } else if arg == "-p" {
+            use_default_path = true;
+        } else if arg == "--" {
+            // End of options
+            i += 1;
+            cmd_args.extend_from_slice(&args[i..]);
+            break;
+        } else if arg.starts_with('-') {
+            return Err(format!("{}: invalid option", arg));
+        } else {
+            cmd_args.extend_from_slice(&args[i..]);
+            break;
+        }
+        i += 1;
+    }
+
+    if cmd_args.is_empty() {
+        return Err("usage: command [-pvV] command [arg ...]".to_string());
+    }
+
+    let cmd_name = &cmd_args[0];
+
+    // -v: print path to command
+    if verbose {
+        // Check if it's a builtin
+        if execute_builtin(cmd_name, &[], context).is_some() {
+            println!("{}", cmd_name);
+            return Ok(success_result());
+        }
+
+        // Check if it's in PATH
+        if let Some(path) = find_in_path(cmd_name) {
+            println!("{}", path.display());
+            return Ok(success_result());
+        }
+
+        return Ok(error_result());
+    }
+
+    // -V: verbose description
+    if very_verbose {
+        // Check if it's a builtin
+        if execute_builtin(cmd_name, &[], context).is_some() {
+            println!("{} is a shell builtin", cmd_name);
+            return Ok(success_result());
+        }
+
+        // Check if it's a function
+        if context.functions.contains_key(cmd_name) {
+            println!("{} is a function", cmd_name);
+            return Ok(success_result());
+        }
+
+        // Check if it's an alias
+        if context.aliases.contains_key(cmd_name) {
+            if let Some(alias_val) = context.aliases.get(cmd_name) {
+                println!("{} is aliased to `{}'", cmd_name, alias_val);
+            }
+            return Ok(success_result());
+        }
+
+        // Check if it's in PATH
+        if let Some(path) = find_in_path(cmd_name) {
+            println!("{} is {}", cmd_name, path.display());
+            return Ok(success_result());
+        }
+
+        return Err(format!("{}: not found", cmd_name));
+    }
+
+    // Execute the command, bypassing functions and aliases
+    // First check if it's a builtin
+    if let Some(result) = execute_builtin(cmd_name, &cmd_args[1..], context) {
+        return Ok(result);
+    }
+
+    // Find in PATH and execute
+    let program_path = find_in_path(cmd_name)
+        .ok_or_else(|| format!("{}: command not found", cmd_name))?;
+
+    let mut command = std::process::Command::new(program_path);
+    command.args(&cmd_args[1..]);
+
+    // Execute
+    #[cfg(unix)]
+    {
+        crate::terminal::unix::execute_with_terminal_control(command, false)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(not(unix))]
+    {
+        crate::terminal::non_unix::execute_with_terminal_control(command, false)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// wait builtin - Wait for background jobs to complete
+fn builtin_wait(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    #[cfg(unix)]
+    {
+        use nix::sys::wait::{waitpid, WaitPidFlag};
+        use nix::unistd::Pid;
+
+        // If no arguments, wait for all background jobs
+        if args.is_empty() {
+            let mut last_status = 0;
+
+            // Get all job PIDs
+            let job_pids: Vec<Pid> = context.job_list.jobs()
+                .map(|job| job.pgid)
+                .collect();
+
+            for pgid in job_pids {
+                match waitpid(pgid, Some(WaitPidFlag::empty())) {
+                    Ok(status) => {
+                        use nix::sys::wait::WaitStatus;
+                        match status {
+                            WaitStatus::Exited(_, code) => last_status = code,
+                            WaitStatus::Signaled(_, sig, _) => last_status = 128 + sig as i32,
+                            _ => {}
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            return exit_code_to_result(last_status);
+        }
+
+        // Wait for specific PIDs
+        let mut last_status = 0;
+        for arg in args {
+            let pid = match arg.parse::<i32>() {
+                Ok(p) => Pid::from_raw(p),
+                Err(_) => {
+                    eprintln!("wait: {}: not a valid process ID", arg);
+                    return error_result();
+                }
+            };
+
+            match waitpid(pid, Some(WaitPidFlag::empty())) {
+                Ok(status) => {
+                    use nix::sys::wait::WaitStatus;
+                    match status {
+                        WaitStatus::Exited(_, code) => last_status = code,
+                        WaitStatus::Signaled(_, sig, _) => last_status = 128 + sig as i32,
+                        _ => {}
+                    }
+                }
+                Err(_) => {
+                    eprintln!("wait: pid {}: no such job", pid);
+                    return error_result();
+                }
+            }
+        }
+
+        exit_code_to_result(last_status)
+    }
+
+    #[cfg(not(unix))]
+    {
+        eprintln!("wait: job control not supported on this platform");
+        error_result()
+    }
+}
+
+/// kill builtin - Send signals to processes
+fn builtin_kill(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+
+        let mut signal = Signal::SIGTERM; // Default signal
+        let mut pids = Vec::new();
+        let mut list_signals = false;
+
+        // Parse arguments
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+
+            if arg == "-l" {
+                list_signals = true;
+                i += 1;
+                continue;
+            }
+
+            if arg.starts_with('-') && arg.len() > 1 {
+                // Parse signal
+                let sig_str = &arg[1..];
+
+                // Try to parse as signal number
+                if let Ok(num) = sig_str.parse::<i32>() {
+                    signal = match Signal::try_from(num) {
+                        Ok(sig) => sig,
+                        Err(_) => {
+                            eprintln!("kill: {}: invalid signal specification", num);
+                            return error_result();
+                        }
+                    };
+                } else {
+                    // Try to parse as signal name
+                    let sig_upper = sig_str.to_uppercase();
+                    let sig_name = sig_upper.strip_prefix("SIG").unwrap_or(&sig_upper);
+
+                    signal = match sig_name {
+                        "HUP" | "1" => Signal::SIGHUP,
+                        "INT" | "2" => Signal::SIGINT,
+                        "QUIT" | "3" => Signal::SIGQUIT,
+                        "ABRT" | "6" => Signal::SIGABRT,
+                        "KILL" | "9" => Signal::SIGKILL,
+                        "ALRM" | "14" => Signal::SIGALRM,
+                        "TERM" | "15" => Signal::SIGTERM,
+                        "USR1" | "10" => Signal::SIGUSR1,
+                        "USR2" | "12" => Signal::SIGUSR2,
+                        "CONT" | "18" => Signal::SIGCONT,
+                        "STOP" | "19" => Signal::SIGSTOP,
+                        "TSTP" | "20" => Signal::SIGTSTP,
+                        _ => {
+                            eprintln!("kill: {}: invalid signal specification", sig_str);
+                            return error_result();
+                        }
+                    };
+                }
+                i += 1;
+                continue;
+            }
+
+            // It's a PID
+            pids.push(arg.clone());
+            i += 1;
+        }
+
+        // Handle -l (list signals)
+        if list_signals {
+            println!(" 1) HUP\t 2) INT\t 3) QUIT\t 6) ABRT\t 9) KILL");
+            println!("10) USR1\t12) USR2\t14) ALRM\t15) TERM");
+            println!("18) CONT\t19) STOP\t20) TSTP");
+            return success_result();
+        }
+
+        // Must have at least one PID
+        if pids.is_empty() {
+            eprintln!("kill: usage: kill [-s sigspec | -signum] pid ...");
+            return error_result();
+        }
+
+        // Send signal to each PID
+        let mut had_error = false;
+        for pid_str in &pids {
+            let pid = match pid_str.parse::<i32>() {
+                Ok(p) => Pid::from_raw(p),
+                Err(_) => {
+                    eprintln!("kill: {}: arguments must be process or job IDs", pid_str);
+                    had_error = true;
+                    continue;
+                }
+            };
+
+            if let Err(e) = kill(pid, signal) {
+                eprintln!("kill: ({}): {}", pid, e);
+                had_error = true;
+            }
+        }
+
+        if had_error {
+            error_result()
+        } else {
+            success_result()
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        eprintln!("kill: not supported on this platform");
+        error_result()
+    }
+}
+
+/// exec builtin - Replace shell with command
+fn builtin_exec(args: &[String], _context: &mut rush_expand::Context) -> Result<ExecutionResult, String> {
+    if args.is_empty() {
+        return Err("usage: exec command [args...]".to_string());
+    }
+
+    let cmd_name = &args[0];
+    let cmd_args = &args[1..];
+
+    // Find the command in PATH
+    let program_path = find_in_path(cmd_name)
+        .ok_or_else(|| format!("{}: command not found", cmd_name))?;
+
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        // Convert path to CString
+        let path_cstr = CString::new(program_path.as_os_str().as_bytes())
+            .map_err(|e| format!("invalid path: {}", e))?;
+
+        // Convert args to CStrings
+        let mut exec_args = vec![path_cstr.clone()];
+        for arg in cmd_args {
+            let arg_cstr = CString::new(arg.as_bytes())
+                .map_err(|e| format!("invalid argument: {}", e))?;
+            exec_args.push(arg_cstr);
+        }
+
+        // Execute - this replaces the current process
+        // If exec succeeds, this function never returns
+        nix::unistd::execv(&path_cstr, &exec_args)
+            .map_err(|e| format!("exec failed: {}", e))?;
+
+        // This should never be reached
+        unreachable!()
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err("exec: not supported on this platform".to_string())
+    }
+}
+
+/// times builtin - Display process times
+fn builtin_times(_args: &[String], _context: &mut rush_expand::Context) -> ExecutionResult {
+    #[cfg(unix)]
+    {
+        use nix::sys::resource::{getrusage, UsageWho};
+
+        // Get rusage for self (the shell)
+        match getrusage(UsageWho::RUSAGE_SELF) {
+            Ok(self_usage) => {
+                let user_sec = self_usage.user_time().tv_sec();
+                let user_usec = self_usage.user_time().tv_usec();
+                let sys_sec = self_usage.system_time().tv_sec();
+                let sys_usec = self_usage.system_time().tv_usec();
+
+                // Get rusage for children
+                match getrusage(UsageWho::RUSAGE_CHILDREN) {
+                    Ok(child_usage) => {
+                        let child_user_sec = child_usage.user_time().tv_sec();
+                        let child_user_usec = child_usage.user_time().tv_usec();
+                        let child_sys_sec = child_usage.system_time().tv_sec();
+                        let child_sys_usec = child_usage.system_time().tv_usec();
+
+                        println!("{}m{:.3}s {}m{:.3}s",
+                                 user_sec / 60,
+                                 (user_sec % 60) as f64 + user_usec as f64 / 1_000_000.0,
+                                 sys_sec / 60,
+                                 (sys_sec % 60) as f64 + sys_usec as f64 / 1_000_000.0);
+                        println!("{}m{:.3}s {}m{:.3}s",
+                                 child_user_sec / 60,
+                                 (child_user_sec % 60) as f64 + child_user_usec as f64 / 1_000_000.0,
+                                 child_sys_sec / 60,
+                                 (child_sys_sec % 60) as f64 + child_sys_usec as f64 / 1_000_000.0);
+                    }
+                    Err(_) => {
+                        eprintln!("times: failed to get child process times");
+                        return error_result();
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!("times: failed to get process times");
+                return error_result();
+            }
+        }
+
+        success_result()
+    }
+
+    #[cfg(not(unix))]
+    {
+        eprintln!("times: not supported on this platform");
+        error_result()
+    }
+}
+
+/// umask builtin - Set or display file creation mask
+fn builtin_umask(args: &[String], _context: &mut rush_expand::Context) -> ExecutionResult {
+    #[cfg(unix)]
+    {
+        use nix::sys::stat::{umask, Mode};
+
+        let mut symbolic = false;
+
+        // Parse options
+        let mut mask_arg = None;
+        for arg in args {
+            if arg == "-S" {
+                symbolic = true;
+            } else if arg.starts_with('-') {
+                eprintln!("umask: {}: invalid option", arg);
+                return error_result();
+            } else {
+                mask_arg = Some(arg);
+            }
+        }
+
+        if let Some(mask_str) = mask_arg {
+            // Set new mask
+            let new_mask = if mask_str.starts_with('0') {
+                // Octal format
+                match u32::from_str_radix(mask_str, 8) {
+                    Ok(m) => Mode::from_bits_truncate(m),
+                    Err(_) => {
+                        eprintln!("umask: {}: invalid octal number", mask_str);
+                        return error_result();
+                    }
+                }
+            } else {
+                // Decimal format (also support)
+                match mask_str.parse::<u32>() {
+                    Ok(m) => Mode::from_bits_truncate(m),
+                    Err(_) => {
+                        eprintln!("umask: {}: invalid number", mask_str);
+                        return error_result();
+                    }
+                }
+            };
+
+            umask(new_mask);
+        } else {
+            // Display current mask
+            // We need to set it twice to read the current value
+            let current = umask(Mode::empty());
+            umask(current);
+
+            if symbolic {
+                // Symbolic format: u=rwx,g=rwx,o=rwx
+                let mode = current.bits();
+                let u_r = if mode & 0o400 == 0 { 'r' } else { '-' };
+                let u_w = if mode & 0o200 == 0 { 'w' } else { '-' };
+                let u_x = if mode & 0o100 == 0 { 'x' } else { '-' };
+                let g_r = if mode & 0o040 == 0 { 'r' } else { '-' };
+                let g_w = if mode & 0o020 == 0 { 'w' } else { '-' };
+                let g_x = if mode & 0o010 == 0 { 'x' } else { '-' };
+                let o_r = if mode & 0o004 == 0 { 'r' } else { '-' };
+                let o_w = if mode & 0o002 == 0 { 'w' } else { '-' };
+                let o_x = if mode & 0o001 == 0 { 'x' } else { '-' };
+
+                println!("u={}{}{},g={}{}{},o={}{}{}",
+                         u_r, u_w, u_x, g_r, g_w, g_x, o_r, o_w, o_x);
+            } else {
+                // Octal format
+                println!("{:04o}", current.bits());
+            }
+        }
+
+        success_result()
+    }
+
+    #[cfg(not(unix))]
+    {
+        eprintln!("umask: not supported on this platform");
+        error_result()
+    }
+}
+
+/// hash builtin - Remember or report command locations
+fn builtin_hash(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut clear_hash = false;
+    let mut print_all = false;
+    let mut commands = Vec::new();
+
+    // Parse arguments
+    for arg in args {
+        if arg == "-r" {
+            clear_hash = true;
+        } else if arg == "-l" {
+            print_all = true;
+        } else if arg.starts_with('-') {
+            eprintln!("hash: {}: invalid option", arg);
+            return error_result();
+        } else {
+            commands.push(arg.clone());
+        }
+    }
+
+    // Clear hash table
+    if clear_hash {
+        context.command_hash.clear();
+        return success_result();
+    }
+
+    // No arguments: display hash table
+    if commands.is_empty() {
+        if context.command_hash.is_empty() {
+            // Nothing to display
+            return success_result();
+        }
+
+        if print_all {
+            // List format: path
+            for (name, path) in &context.command_hash {
+                println!("builtin hash -p {} {}", path, name);
+            }
+        } else {
+            // Table format: hits command
+            for (name, path) in &context.command_hash {
+                println!("{}\t{}", name, path);
+            }
+        }
+        return success_result();
+    }
+
+    // Add commands to hash table
+    let mut had_error = false;
+    for cmd_name in &commands {
+        if let Some(path) = find_in_path(cmd_name) {
+            context.command_hash.insert(cmd_name.clone(), path.display().to_string());
+        } else {
+            eprintln!("hash: {}: not found", cmd_name);
+            had_error = true;
+        }
+    }
+
+    if had_error {
+        error_result()
+    } else {
+        success_result()
+    }
+}
+
+/// getopts builtin - Parse utility options
+fn builtin_getopts(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    if args.len() < 2 {
+        eprintln!("getopts: usage: getopts optstring name [args...]");
+        return error_result();
+    }
+
+    let optstring = &args[0];
+    let var_name = &args[1];
+
+    // Get arguments to parse (either from args[2..] or positional parameters)
+    let parse_args: Vec<String> = if args.len() > 2 {
+        args[2..].to_vec()
+    } else {
+        context.positional_params.clone()
+    };
+
+    // Check if we're done parsing
+    if context.optind > parse_args.len() {
+        // Reset OPTIND for next getopts call
+        context.optind = 1;
+        let _ = context.set_var("OPTIND", "1");
+        return error_result(); // Return 1 to indicate done
+    }
+
+    let current_arg = &parse_args[context.optind - 1];
+
+    // Check if this is an option
+    if !current_arg.starts_with('-') || current_arg == "-" {
+        // Not an option, we're done
+        context.optind = 1;
+        let _ = context.set_var("OPTIND", "1");
+        return error_result();
+    }
+
+    // Check for end of options marker "--"
+    if current_arg == "--" {
+        context.optind += 1;
+        let _ = context.set_var("OPTIND", context.optind.to_string());
+        context.optind = 1;
+        return error_result();
+    }
+
+    // Parse the option
+    // For simplicity, we'll just handle single character options
+    let opt_chars: Vec<char> = current_arg.chars().skip(1).collect();
+    if opt_chars.is_empty() {
+        context.optind += 1;
+        let _ = context.set_var("OPTIND", context.optind.to_string());
+        return error_result();
+    }
+
+    let opt_char = opt_chars[0];
+
+    // Check if option is in optstring
+    if let Some(pos) = optstring.find(opt_char) {
+        // Set the variable to the option character
+        let _ = context.set_var(var_name, opt_char.to_string());
+
+        // Check if option requires an argument
+        if pos + 1 < optstring.len() && optstring.chars().nth(pos + 1) == Some(':') {
+            // Option requires an argument
+            if opt_chars.len() > 1 {
+                // Argument is in same word: -oARG
+                let arg_value: String = opt_chars[1..].iter().collect();
+                let _ = context.set_var("OPTARG", arg_value);
+            } else if context.optind < parse_args.len() {
+                // Argument is next word: -o ARG
+                context.optind += 1;
+                let arg_value = &parse_args[context.optind - 1];
+                let _ = context.set_var("OPTARG", arg_value);
+            } else {
+                // Missing required argument
+                if optstring.starts_with(':') {
+                    // Silent mode: set var to ':', OPTARG to option char
+                    let _ = context.set_var(var_name, ":");
+                    let _ = context.set_var("OPTARG", opt_char.to_string());
+                } else {
+                    eprintln!("getopts: option requires an argument -- {}", opt_char);
+                    let _ = context.set_var(var_name, "?");
+                    let _ = context.set_var("OPTARG", opt_char.to_string());
+                }
+                context.optind += 1;
+                let _ = context.set_var("OPTIND", context.optind.to_string());
+                return success_result();
+            }
+        }
+
+        context.optind += 1;
+        let _ = context.set_var("OPTIND", context.optind.to_string());
+        success_result()
+    } else {
+        // Invalid option
+        if optstring.starts_with(':') {
+            // Silent mode: set var to '?'
+            let _ = context.set_var(var_name, "?");
+            let _ = context.set_var("OPTARG", opt_char.to_string());
+        } else {
+            eprintln!("getopts: illegal option -- {}", opt_char);
+            let _ = context.set_var(var_name, "?");
+            let _ = context.set_var("OPTARG", opt_char.to_string());
+        }
+        context.optind += 1;
+        let _ = context.set_var("OPTIND", context.optind.to_string());
+        success_result()
+    }
 }
 
 #[cfg(unix)]
