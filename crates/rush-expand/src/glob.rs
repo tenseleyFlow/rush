@@ -9,6 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use globset::{Glob, GlobBuilder, GlobMatcher};
+use regex::Regex;
 
 #[derive(Debug)]
 pub struct GlobOptions {
@@ -18,6 +19,8 @@ pub struct GlobOptions {
     pub globstar: bool,
     /// Return empty list if no matches (vs literal pattern)
     pub nullglob: bool,
+    /// Enable extended glob patterns: !(pat), ?(pat), *(pat), +(pat), @(pat)
+    pub extglob: bool,
 }
 
 impl Default for GlobOptions {
@@ -26,23 +29,80 @@ impl Default for GlobOptions {
             match_dotfiles: false,
             globstar: true,
             nullglob: false,
+            extglob: false,
         }
     }
 }
 
+/// Extended glob pattern representation
+#[derive(Debug)]
+enum ExtGlobPattern {
+    /// No extended glob - use standard matching
+    Standard(String),
+    /// Negation pattern - requires two-stage filtering
+    Negation {
+        base_pattern: String,
+        exclude_regex: Regex,
+    },
+}
+
 /// Expand a glob pattern into matching file paths
 pub fn expand_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<String>, String> {
+    // Check for extended glob patterns first (before metacharacter check)
+    let is_extglob = options.extglob && (
+        pattern.contains("!(") || pattern.contains("?(") || pattern.contains("*(")
+        || pattern.contains("+(") || pattern.contains("@(")
+    );
+
     // Check if pattern contains glob metacharacters
-    if !has_glob_chars(pattern) {
+    // Skip this check for extglob patterns as they need processing even without metacharacters
+    if !is_extglob && !has_glob_chars(pattern) {
         // No glob characters - return as-is
         return Ok(vec![pattern.to_string()]);
     }
 
-    // Handle extended glob patterns first
-    let (pattern, _is_extglob) = parse_extglob(pattern)?;
+    // Parse and convert extended glob patterns (if extglob is enabled)
+    let extglob_result = parse_extglob(pattern, options.extglob)?;
 
+    match extglob_result {
+        ExtGlobPattern::Standard(base_pattern) => {
+            // Standard glob - no negation filtering needed
+            expand_standard_glob(&base_pattern, options)
+        }
+        ExtGlobPattern::Negation { base_pattern, exclude_regex } => {
+            // Two-stage filtering for negation patterns
+            // Stage 1: Expand base pattern to get candidates
+            let candidates = expand_standard_glob(&base_pattern, options)?;
+
+            // Stage 2: Filter out matches of the exclude pattern
+            let filtered: Vec<String> = candidates
+                .into_iter()
+                .filter(|path| {
+                    // Extract just the filename for matching
+                    let filename = Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(path);
+
+                    // Keep if it does NOT match the exclude pattern
+                    !exclude_regex.is_match(filename)
+                })
+                .collect();
+
+            // Handle no matches
+            if filtered.is_empty() && !options.nullglob {
+                Ok(vec![pattern.to_string()])
+            } else {
+                Ok(filtered)
+            }
+        }
+    }
+}
+
+/// Expand a standard (non-negated) glob pattern
+fn expand_standard_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<String>, String> {
     // Build glob matcher
-    let glob = GlobBuilder::new(&pattern)
+    let glob = GlobBuilder::new(pattern)
         .literal_separator(false) // Allow * to match /
         .build()
         .map_err(|e| format!("Invalid glob pattern: {}", e))?;
@@ -50,7 +110,7 @@ pub fn expand_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<String>, 
     let matcher = glob.compile_matcher();
 
     // Get base directory and relative pattern
-    let (base_dir, rel_pattern) = split_pattern(&pattern);
+    let (base_dir, rel_pattern) = split_pattern(pattern);
 
     // Expand the pattern
     let mut matches = Vec::new();
@@ -65,37 +125,90 @@ pub fn expand_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<String>, 
             Ok(vec![])
         } else {
             // Return literal pattern if no matches
-            Ok(vec![pattern.clone()])
+            Ok(vec![pattern.to_string()])
         }
     } else {
         Ok(matches)
     }
 }
 
-/// Check if a pattern contains glob metacharacters
+/// Check if a pattern contains glob metacharacters or extended glob patterns
 fn has_glob_chars(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[') || s.contains(']')
+        || s.contains("!(") || s.contains("?(") || s.contains("*(")
+        || s.contains("+(") || s.contains("@(")
 }
 
-/// Parse extended glob patterns and convert to standard glob
-/// Returns (converted_pattern, is_extglob)
-fn parse_extglob(pattern: &str) -> Result<(String, bool), String> {
+/// Parse extended glob patterns and convert appropriately
+fn parse_extglob(pattern: &str, extglob_enabled: bool) -> Result<ExtGlobPattern, String> {
+    // If extglob is disabled, treat everything as standard glob
+    if !extglob_enabled {
+        return Ok(ExtGlobPattern::Standard(pattern.to_string()));
+    }
+
     // Check for extended glob patterns: !(pat), ?(pat), *(pat), +(pat), @(pat)
-    if pattern.contains("!(") || pattern.contains("?(") ||
-       pattern.contains("*(") || pattern.contains("+(") || pattern.contains("@(") {
-        // Convert extglob to standard glob
-        // For now, use a simplified conversion
-        let converted = convert_extglob(pattern)?;
-        Ok((converted, true))
+    if !pattern.contains("!(") && !pattern.contains("?(") &&
+       !pattern.contains("*(") && !pattern.contains("+(") && !pattern.contains("@(") {
+        // No extended glob - return as standard
+        return Ok(ExtGlobPattern::Standard(pattern.to_string()));
+    }
+
+    // Convert extglob - check if it contains negation
+    let (converted_pattern, has_negation, exclude_pattern) = convert_extglob(pattern)?;
+
+    if has_negation {
+        // Build regex from the exclude pattern
+        let regex_pattern = glob_to_regex(&exclude_pattern)?;
+        let exclude_regex = Regex::new(&regex_pattern)
+            .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+
+        Ok(ExtGlobPattern::Negation {
+            base_pattern: converted_pattern,
+            exclude_regex,
+        })
     } else {
-        Ok((pattern.to_string(), false))
+        Ok(ExtGlobPattern::Standard(converted_pattern))
     }
 }
 
+/// Convert glob pattern to regex pattern
+fn glob_to_regex(pattern: &str) -> Result<String, String> {
+    let mut regex = String::from("^");
+
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' => regex.push_str("\\."),
+            '[' => regex.push('['),
+            ']' => regex.push(']'),
+            '(' => regex.push_str("\\("),
+            ')' => regex.push_str("\\)"),
+            '{' => regex.push_str("\\{"),
+            '}' => regex.push_str("\\}"),
+            '+' => regex.push_str("\\+"),
+            '^' => regex.push_str("\\^"),
+            '$' => regex.push_str("\\$"),
+            '|' => regex.push_str("\\|"),
+            '\\' => regex.push_str("\\\\"),
+            _ => regex.push(ch),
+        }
+    }
+
+    regex.push('$');
+    Ok(regex)
+}
+
 /// Convert extended glob patterns to standard glob
-fn convert_extglob(pattern: &str) -> Result<String, String> {
+/// Returns (converted_pattern, has_negation, exclude_pattern)
+fn convert_extglob(pattern: &str) -> Result<(String, bool, String), String> {
     let mut result = String::new();
     let mut chars = pattern.chars().peekable();
+    let mut has_negation = false;
+    let mut exclude_pattern = String::new();
+
+    // For simplicity, we only handle a single !(pattern) at the top level
+    // Multiple or nested negations are not yet supported
 
     while let Some(ch) = chars.next() {
         match ch {
@@ -125,21 +238,36 @@ fn convert_extglob(pattern: &str) -> Result<String, String> {
                     match ch {
                         '!' => {
                             // !(pattern) - negative match
-                            // Convert to [^...] or handle specially
-                            // For simplicity, skip this match in filtering
-                            result.push_str(&format!("*")); // Simplified
+                            // Use two-stage filtering: match all (*), then exclude pattern
+                            result.push('*');
+                            has_negation = true;
+                            exclude_pattern = inner;
                         }
                         '?' => {
                             // ?(pattern) - zero or one
-                            result.push_str(&format!("({})?", inner));
+                            // In glob: not directly supported, approximate with optional match
+                            // For single char patterns, just make it optional
+                            if inner.len() == 1 {
+                                result.push('[');
+                                result.push_str(&inner);
+                                result.push(']');
+                                result.push('?');
+                            } else {
+                                // Multi-char: can't express in glob, use pattern or nothing
+                                // This is lossy but better than nothing
+                                result.push('*');
+                            }
                         }
                         '*' => {
                             // *(pattern) - zero or more
-                            result.push_str(&format!("({})*", inner));
+                            // In glob: approximate with *
+                            result.push('*');
                         }
                         '+' => {
                             // +(pattern) - one or more
-                            result.push_str(&format!("({})+", inner));
+                            // In glob: approximate with pattern followed by *
+                            result.push_str(&inner);
+                            result.push('*');
                         }
                         '@' => {
                             // @(pattern) - exactly one
@@ -155,7 +283,7 @@ fn convert_extglob(pattern: &str) -> Result<String, String> {
         }
     }
 
-    Ok(result)
+    Ok((result, has_negation, exclude_pattern))
 }
 
 /// Split pattern into base directory and relative pattern

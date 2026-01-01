@@ -150,11 +150,19 @@ word_part = {
     | arithmetic_expansion
     | command_substitution
     | array_literal
+    | extglob_pattern
     | bare_word_part
 }
 
 // Array literal: (elem1 elem2 elem3)
 array_literal = { "(" ~ ws* ~ (word ~ (ws+ ~ word)*)? ~ ws* ~ ")" }
+
+// Extended glob patterns: !(pat), ?(pat), *(pat), +(pat), @(pat)
+// Note: These are treated as literal text for glob expansion later
+extglob_pattern = @{
+    ("!" | "?" | "*" | "+" | "@") ~ "(" ~ extglob_content ~ ")"
+}
+extglob_content = { (!(")" | NEWLINE) ~ ANY)* }
 
 // Variable expansion: $VAR or ${VAR} or ${VAR:-default} or ${#VAR} or ${VAR#pattern} etc.
 var_expansion = {

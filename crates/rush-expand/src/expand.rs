@@ -417,7 +417,12 @@ pub fn expand_words(words: &[Word], context: &mut Context) -> Result<Vec<String>
 
         // Finally, apply glob expansion to each expanded word
         for expanded_word in expanded {
-            let glob_options = crate::glob::GlobOptions::default();
+            let glob_options = crate::glob::GlobOptions {
+                match_dotfiles: context.options.dotglob,
+                globstar: true,
+                nullglob: context.options.nullglob,
+                extglob: context.options.extglob,
+            };
             match crate::glob::expand_glob(&expanded_word, &glob_options) {
                 Ok(mut glob_results) => {
                     results.append(&mut glob_results);

@@ -291,6 +291,10 @@ fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, P
         Rule::bare_word_part => {
             Ok(vec![WordPart::Literal(inner.as_str().to_string())])
         }
+        Rule::extglob_pattern => {
+            // Extended glob patterns like !(*.txt) are treated as literals for glob expansion
+            Ok(vec![WordPart::Literal(inner.as_str().to_string())])
+        }
         Rule::var_expansion => {
             Ok(vec![WordPart::VarExpansion(parse_var_expansion(inner)?)])
         }
