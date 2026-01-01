@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 
 #[cfg(unix)]
@@ -59,6 +59,8 @@ pub struct Context {
     pub traps: HashMap<String, String>,
     /// Shell options (set -e, set -x, etc.)
     pub options: ShellOptions,
+    /// Read-only variables
+    readonly_vars: HashSet<String>,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
@@ -76,6 +78,7 @@ impl Context {
             aliases: HashMap::new(),
             traps: HashMap::new(),
             options: ShellOptions::default(),
+            readonly_vars: HashSet::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         };
@@ -100,6 +103,7 @@ impl Context {
             aliases: HashMap::new(),
             traps: HashMap::new(),
             options: ShellOptions::default(),
+            readonly_vars: HashSet::new(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         }
@@ -149,6 +153,21 @@ impl Context {
     /// Unexport a variable (remove from exported but keep in variables)
     pub fn unexport_var(&mut self, name: &str) {
         self.exported.remove(name);
+    }
+
+    /// Mark a variable as readonly
+    pub fn mark_readonly(&mut self, name: impl Into<String>) {
+        self.readonly_vars.insert(name.into());
+    }
+
+    /// Check if a variable is readonly
+    pub fn is_readonly(&self, name: &str) -> bool {
+        self.readonly_vars.contains(name)
+    }
+
+    /// Get all readonly variables
+    pub fn readonly_vars(&self) -> &HashSet<String> {
+        &self.readonly_vars
     }
 
     /// Update the exit status

@@ -181,6 +181,7 @@ pub(crate) fn execute_builtin(
         "shopt" => Some(builtin_shopt(args, context)),
         "export" => Some(builtin_export(args, context)),
         "unset" => Some(builtin_unset(args, context)),
+        "readonly" => Some(builtin_readonly(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -650,6 +651,72 @@ fn builtin_unset(args: &[String], context: &mut rush_expand::Context) -> Executi
         }
         if unset_funcs {
             context.functions.remove(name);
+        }
+    }
+
+    success_result()
+}
+
+/// readonly builtin - Mark variables as readonly
+fn builtin_readonly(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut print_format = false;
+    let mut vars_to_process = Vec::new();
+
+    // Parse arguments
+    for arg in args {
+        if arg == "-p" {
+            print_format = true;
+        } else if arg == "-f" {
+            // Readonly functions not yet supported
+            eprintln!("readonly: -f: readonly functions not yet supported");
+            return error_result();
+        } else if arg.starts_with('-') {
+            eprintln!("readonly: {}: invalid option", arg);
+            return error_result();
+        } else {
+            vars_to_process.push(arg.clone());
+        }
+    }
+
+    // No arguments or -p: list all readonly variables
+    if vars_to_process.is_empty() {
+        let mut readonly_list: Vec<_> = context.readonly_vars().iter().collect();
+        readonly_list.sort();
+        for name in readonly_list {
+            if let Some(value) = context.get_var(name) {
+                println!("readonly {}={}", name, value);
+            } else {
+                println!("readonly {}", name);
+            }
+        }
+        return success_result();
+    }
+
+    // Process each variable
+    for var in &vars_to_process {
+        if let Some(eq_pos) = var.find('=') {
+            // VAR=value format
+            let name = &var[..eq_pos];
+            let value = &var[eq_pos + 1..];
+
+            // Check if already readonly
+            if context.is_readonly(name) {
+                eprintln!("readonly: {}: readonly variable", name);
+                return error_result();
+            }
+
+            // Set value and mark readonly
+            context.set_var(name, value);
+            context.mark_readonly(name);
+        } else {
+            // Just VAR (no value) - mark existing variable as readonly
+            if !context.is_readonly(var) {
+                context.mark_readonly(var);
+                // If variable doesn't exist, create it with empty value
+                if context.get_var(var).is_none() {
+                    context.set_var(var, "");
+                }
+            }
         }
     }
 
