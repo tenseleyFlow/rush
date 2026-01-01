@@ -274,24 +274,21 @@ pub fn execute_simple_with_redirects(
                             .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
                         array_values.push(expanded);
                     }
-                    context.arrays.insert(assignment.name.clone(), array_values);
+                    context.arrays.insert(assignment.name.clone(), rush_expand::context::ArrayType::Indexed(array_values));
                 }
             }
         } else if let Some(index) = &assignment.index {
             // arr[index]=value - indexed array assignment
             let value = rush_expand::expand_words(&[assignment.value.clone()], context)
                 .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
-            let idx = index.parse::<usize>().unwrap_or(0);
 
-            // Get or create array
-            let array = context.arrays.entry(assignment.name.clone()).or_insert_with(Vec::new);
-
-            // Extend array if necessary
-            if idx >= array.len() {
-                array.resize(idx + 1, String::new());
+            // Use Context helper method which handles both indexed and associative arrays
+            if let Err(err) = context.set_array_element(&assignment.name, index.clone(), value.join(" ")) {
+                return Err(PipelineError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    err,
+                )));
             }
-
-            array[idx] = value.join(" ");
         } else {
             // Regular variable assignment
             let value = rush_expand::expand_words(&[assignment.value.clone()], context)

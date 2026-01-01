@@ -182,6 +182,7 @@ pub(crate) fn execute_builtin(
         "export" => Some(builtin_export(args, context)),
         "unset" => Some(builtin_unset(args, context)),
         "readonly" => Some(builtin_readonly(args, context)),
+        "declare" | "typeset" => Some(builtin_declare(args, context)),
         "local" => Some(builtin_local(args, context)),
         "read" => Some(builtin_read(args, context)),
         "shift" => Some(builtin_shift(args, context)),
@@ -744,6 +745,214 @@ fn builtin_readonly(args: &[String], context: &mut rush_expand::Context) -> Exec
                     let _ = context.set_var(var, "");
                 }
                 context.mark_readonly(var);
+            }
+        }
+    }
+
+    success_result()
+}
+
+/// declare/typeset builtin - Declare variables and arrays with attributes
+fn builtin_declare(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut print_mode = false;
+    let mut indexed_array = false;
+    let mut associative_array = false;
+    let mut readonly = false;
+    let mut export = false;
+    let mut vars_to_process = Vec::new();
+
+    // Parse arguments
+    for arg in args {
+        if arg.starts_with('-') {
+            for ch in arg.chars().skip(1) {
+                match ch {
+                    'a' => indexed_array = true,
+                    'A' => associative_array = true,
+                    'r' => readonly = true,
+                    'x' => export = true,
+                    'p' => print_mode = true,
+                    _ => {
+                        eprintln!("declare: -{}: invalid option", ch);
+                        return error_result();
+                    }
+                }
+            }
+        } else {
+            vars_to_process.push(arg.clone());
+        }
+    }
+
+    // Check for conflicting flags
+    if indexed_array && associative_array {
+        eprintln!("declare: cannot use -a and -A together");
+        return error_result();
+    }
+
+    // Print mode
+    if print_mode {
+        if vars_to_process.is_empty() {
+            // Print all variables
+            let mut all_vars: Vec<_> = context.all_vars().iter().collect();
+            all_vars.sort_by_key(|(name, _)| *name);
+            for (name, value) in all_vars {
+                let mut attrs = String::new();
+                if context.is_readonly(name) {
+                    attrs.push_str("r");
+                }
+                if context.is_exported(name) {
+                    attrs.push_str("x");
+                }
+                if context.is_associative_array(name) {
+                    attrs.push_str("A");
+                } else if context.arrays.contains_key(name) {
+                    attrs.push_str("a");
+                }
+
+                if attrs.is_empty() {
+                    println!("declare -- {}={}", name, value);
+                } else {
+                    println!("declare -{} {}={}", attrs, name, value);
+                }
+            }
+            return success_result();
+        } else {
+            // Print specific variables
+            for var in &vars_to_process {
+                // Check if it's an array
+                if let Some(array) = context.arrays.get(var) {
+                    let mut attrs = String::new();
+                    if context.is_readonly(var) {
+                        attrs.push_str("r");
+                    }
+                    if context.is_exported(var) {
+                        attrs.push_str("x");
+                    }
+
+                    match array {
+                        rush_expand::context::ArrayType::Indexed(vec) => {
+                            attrs.push_str("a");
+                            // Print array elements
+                            let elements: Vec<String> = vec.iter()
+                                .enumerate()
+                                .map(|(i, v)| format!("[{}]=\"{}\"", i, v))
+                                .collect();
+                            if attrs.is_empty() {
+                                println!("declare -- {}=({})", var, elements.join(" "));
+                            } else {
+                                println!("declare -{} {}=({})", attrs, var, elements.join(" "));
+                            }
+                        }
+                        rush_expand::context::ArrayType::Associative(map) => {
+                            attrs.push_str("A");
+                            // Print associative array elements
+                            let mut elements: Vec<String> = map.iter()
+                                .map(|(k, v)| format!("[{}]=\"{}\"", k, v))
+                                .collect();
+                            elements.sort();
+                            if attrs.is_empty() {
+                                println!("declare -- {}=({})", var, elements.join(" "));
+                            } else {
+                                println!("declare -{} {}=({})", attrs, var, elements.join(" "));
+                            }
+                        }
+                    }
+                } else if let Some(value) = context.get_var(var) {
+                    // Regular variable
+                    let mut attrs = String::new();
+                    if context.is_readonly(var) {
+                        attrs.push_str("r");
+                    }
+                    if context.is_exported(var) {
+                        attrs.push_str("x");
+                    }
+
+                    if attrs.is_empty() {
+                        println!("declare -- {}=\"{}\"", var, value);
+                    } else {
+                        println!("declare -{} {}=\"{}\"", attrs, var, value);
+                    }
+                }
+            }
+            return success_result();
+        }
+    }
+
+    // Process each variable
+    for var in &vars_to_process {
+        if let Some(eq_pos) = var.find('=') {
+            // VAR=value format
+            let name = &var[..eq_pos];
+            let value = &var[eq_pos + 1..];
+
+            // Check if readonly
+            if context.is_readonly(name) {
+                eprintln!("declare: {}: readonly variable", name);
+                return error_result();
+            }
+
+            // Handle array declarations
+            if associative_array {
+                // Create associative array
+                context.create_assoc_array(name.to_string());
+                // TODO: Parse compound assignments like arr=([key1]=val1 [key2]=val2)
+                // For now, just create empty array
+            } else if indexed_array {
+                // Create indexed array
+                // TODO: Parse array literal assignments like arr=(one two three)
+                // For now, set as regular variable
+                let _ = context.set_var(name, value);
+            } else {
+                // Regular variable
+                let _ = context.set_var(name, value);
+            }
+
+            // Apply attributes
+            if readonly {
+                context.mark_readonly(name);
+            }
+            if export {
+                // Clone the value to avoid borrow checker issues
+                let val = context.get_var(name).map(|s| s.to_string());
+                if let Some(v) = val {
+                    context.export_var(name, v);
+                }
+            }
+        } else {
+            // Just VAR (no value) - declare without assignment
+
+            // Create array if -a or -A specified
+            if associative_array {
+                if !context.is_readonly(var) {
+                    context.create_assoc_array(var.to_string());
+                } else {
+                    eprintln!("declare: {}: readonly variable", var);
+                    return error_result();
+                }
+            } else if indexed_array {
+                if !context.is_readonly(var) {
+                    context.create_indexed_array(var.to_string());
+                } else {
+                    eprintln!("declare: {}: readonly variable", var);
+                    return error_result();
+                }
+            } else if context.get_var(var).is_none() {
+                // Create variable with empty value if it doesn't exist
+                let _ = context.set_var(var, "");
+            }
+
+            // Apply attributes
+            if readonly {
+                context.mark_readonly(var);
+            }
+            if export {
+                // Clone the value to avoid borrow checker issues
+                let val = context.get_var(var).map(|s| s.to_string());
+                if let Some(v) = val {
+                    context.export_var(var, v);
+                } else {
+                    // Export with empty value
+                    context.export_var(var, "");
+                }
             }
         }
     }

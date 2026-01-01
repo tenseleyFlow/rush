@@ -21,6 +21,15 @@ impl std::fmt::Debug for CommandExecutorWrapper {
     }
 }
 
+/// Array types for distinguishing indexed vs associative
+#[derive(Debug, Clone)]
+pub enum ArrayType {
+    /// Indexed array: arr=(one two three), accessed by integer index
+    Indexed(Vec<String>),
+    /// Associative array: declare -A arr, accessed by string key
+    Associative(HashMap<String, String>),
+}
+
 /// Shell options that can be set with the 'set' builtin
 #[derive(Debug, Clone)]
 pub struct ShellOptions {
@@ -71,8 +80,10 @@ pub struct Context {
     pub last_exit_status: i32,
     /// Shell functions (name -> body)
     pub functions: HashMap<String, rush_parser::ast::FunctionDef>,
-    /// Arrays (name -> values)
-    pub arrays: HashMap<String, Vec<String>>,
+    /// Arrays (name -> indexed or associative)
+    pub arrays: HashMap<String, ArrayType>,
+    /// Set of array names that are declared as associative (for type checking)
+    pub associative_array_names: HashSet<String>,
     /// Command aliases (name -> expansion)
     pub aliases: HashMap<String, String>,
     /// Signal traps (signal name/number -> command)
@@ -105,6 +116,7 @@ impl Context {
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
+            associative_array_names: HashSet::new(),
             aliases: HashMap::new(),
             traps: HashMap::new(),
             options: ShellOptions::default(),
@@ -135,6 +147,7 @@ impl Context {
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
+            associative_array_names: HashSet::new(),
             aliases: HashMap::new(),
             traps: HashMap::new(),
             options: ShellOptions::default(),
@@ -269,6 +282,99 @@ impl Context {
     /// Get the exit status
     pub fn exit_status(&self) -> i32 {
         self.last_exit_status
+    }
+
+    /// Check if an array is associative
+    pub fn is_associative_array(&self, name: &str) -> bool {
+        self.associative_array_names.contains(name)
+    }
+
+    /// Get indexed array value by integer index
+    pub fn get_indexed_array(&self, name: &str, index: usize) -> Option<&String> {
+        match self.arrays.get(name) {
+            Some(ArrayType::Indexed(vec)) => vec.get(index),
+            _ => None,
+        }
+    }
+
+    /// Get associative array value by string key
+    pub fn get_assoc_array(&self, name: &str, key: &str) -> Option<&String> {
+        match self.arrays.get(name) {
+            Some(ArrayType::Associative(map)) => map.get(key),
+            _ => None,
+        }
+    }
+
+    /// Get array length (works for both indexed and associative)
+    pub fn get_array_len(&self, name: &str) -> usize {
+        match self.arrays.get(name) {
+            Some(ArrayType::Indexed(vec)) => vec.len(),
+            Some(ArrayType::Associative(map)) => map.len(),
+            None => 0,
+        }
+    }
+
+    /// Set array element (auto-detects type based on whether array is associative)
+    /// For indexed arrays, parses key as integer index
+    /// For associative arrays, uses key as-is
+    /// Creates new indexed array if name doesn't exist and key is numeric
+    pub fn set_array_element(&mut self, name: &str, key: String, value: String) -> Result<(), String> {
+        if self.is_associative_array(name) {
+            // Associative array - use key as-is
+            match self.arrays.get_mut(name) {
+                Some(ArrayType::Associative(map)) => {
+                    map.insert(key, value);
+                    Ok(())
+                }
+                Some(ArrayType::Indexed(_)) => {
+                    Err(format!("{}: cannot use string index on indexed array", name))
+                }
+                None => {
+                    // Create new associative array
+                    let mut map = HashMap::new();
+                    map.insert(key, value);
+                    self.arrays.insert(name.to_string(), ArrayType::Associative(map));
+                    self.associative_array_names.insert(name.to_string());
+                    Ok(())
+                }
+            }
+        } else {
+            // Indexed array - parse key as integer
+            let index = key.parse::<usize>()
+                .map_err(|_| format!("{}: bad array subscript", key))?;
+
+            match self.arrays.get_mut(name) {
+                Some(ArrayType::Indexed(vec)) => {
+                    // Extend vector if needed
+                    if index >= vec.len() {
+                        vec.resize(index + 1, String::new());
+                    }
+                    vec[index] = value;
+                    Ok(())
+                }
+                Some(ArrayType::Associative(_)) => {
+                    Err(format!("{}: cannot use integer index on associative array", name))
+                }
+                None => {
+                    // Create new indexed array
+                    let mut vec = vec![String::new(); index + 1];
+                    vec[index] = value;
+                    self.arrays.insert(name.to_string(), ArrayType::Indexed(vec));
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Create an associative array
+    pub fn create_assoc_array(&mut self, name: String) {
+        self.arrays.insert(name.clone(), ArrayType::Associative(HashMap::new()));
+        self.associative_array_names.insert(name);
+    }
+
+    /// Create an indexed array
+    pub fn create_indexed_array(&mut self, name: String) {
+        self.arrays.insert(name, ArrayType::Indexed(Vec::new()));
     }
 }
 

@@ -203,45 +203,63 @@ fn expand_var(var_exp: &VarExpansion, context: &mut Context) -> Result<String, E
             Ok(value.to_lowercase())
         }
         VarExpansion::ArrayElement { name, index } => {
-            // ${arr[index]} - get array element at index
-            if let Some(array) = context.arrays.get(name) {
-                let idx = index.parse::<usize>().unwrap_or(0);
-                Ok(array.get(idx).cloned().unwrap_or_default())
-            } else {
-                Ok(String::new())
+            // ${arr[index]} - get array element at index or key
+            match context.arrays.get(name) {
+                Some(crate::context::ArrayType::Indexed(vec)) => {
+                    // Indexed array - parse index as integer
+                    let idx = index.parse::<usize>().unwrap_or(0);
+                    Ok(vec.get(idx).cloned().unwrap_or_default())
+                }
+                Some(crate::context::ArrayType::Associative(map)) => {
+                    // Associative array - use index as string key
+                    Ok(map.get(index).cloned().unwrap_or_default())
+                }
+                None => Ok(String::new()),
             }
         }
         VarExpansion::ArrayAll(name) => {
             // ${arr[@]} - all elements as separate words
-            if let Some(array) = context.arrays.get(name) {
-                Ok(array.join(" "))
-            } else {
-                Ok(String::new())
+            match context.arrays.get(name) {
+                Some(crate::context::ArrayType::Indexed(vec)) => Ok(vec.join(" ")),
+                Some(crate::context::ArrayType::Associative(map)) => {
+                    // For associative arrays, ${arr[@]} returns all values
+                    Ok(map.values().cloned().collect::<Vec<_>>().join(" "))
+                }
+                None => Ok(String::new()),
             }
         }
         VarExpansion::ArrayStar(name) => {
             // ${arr[*]} - all elements as single word
-            if let Some(array) = context.arrays.get(name) {
-                Ok(array.join(" "))
-            } else {
-                Ok(String::new())
+            match context.arrays.get(name) {
+                Some(crate::context::ArrayType::Indexed(vec)) => Ok(vec.join(" ")),
+                Some(crate::context::ArrayType::Associative(map)) => {
+                    // For associative arrays, ${arr[*]} returns all values
+                    Ok(map.values().cloned().collect::<Vec<_>>().join(" "))
+                }
+                None => Ok(String::new()),
             }
         }
         VarExpansion::ArrayLength(name) => {
             // ${#arr[@]} - number of elements in array
-            if let Some(array) = context.arrays.get(name) {
-                Ok(array.len().to_string())
-            } else {
-                Ok("0".to_string())
+            match context.arrays.get(name) {
+                Some(crate::context::ArrayType::Indexed(vec)) => Ok(vec.len().to_string()),
+                Some(crate::context::ArrayType::Associative(map)) => Ok(map.len().to_string()),
+                None => Ok("0".to_string()),
             }
         }
         VarExpansion::ArrayIndices(name) => {
-            // ${!arr[@]} - array indices
-            if let Some(array) = context.arrays.get(name) {
-                let indices: Vec<String> = (0..array.len()).map(|i| i.to_string()).collect();
-                Ok(indices.join(" "))
-            } else {
-                Ok(String::new())
+            // ${!arr[@]} - array indices or keys
+            match context.arrays.get(name) {
+                Some(crate::context::ArrayType::Indexed(vec)) => {
+                    // For indexed arrays, return numeric indices
+                    let indices: Vec<String> = (0..vec.len()).map(|i| i.to_string()).collect();
+                    Ok(indices.join(" "))
+                }
+                Some(crate::context::ArrayType::Associative(map)) => {
+                    // For associative arrays, return keys
+                    Ok(map.keys().cloned().collect::<Vec<_>>().join(" "))
+                }
+                None => Ok(String::new()),
             }
         }
     }
