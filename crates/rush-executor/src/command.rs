@@ -129,6 +129,9 @@ pub(crate) fn execute_builtin(
                 .unwrap_or(0);
             std::process::exit(code);
         }
+        "true" => Some(success_result()),
+        "false" => Some(error_result()),
+        ":" => Some(success_result()),
         "cd" => {
             let default_home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
             let dir = args.first()
