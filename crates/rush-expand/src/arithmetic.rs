@@ -72,6 +72,11 @@ enum Token {
     DivideAssign,       // /=
     ModuloAssign,       // %=
     PowerAssign,        // **=
+    AndAssign,          // &=
+    OrAssign,           // |=
+    XorAssign,          // ^=
+    LeftShiftAssign,    // <<=
+    RightShiftAssign,   // >>=
 
     // Bitwise operators
     BitwiseAnd,         // &
@@ -188,6 +193,9 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, ArithmeticError> {
                 if chars.peek() == Some(&'&') {
                     chars.next();
                     tokens.push(Token::LogicalAnd);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::AndAssign);
                 } else {
                     tokens.push(Token::BitwiseAnd);
                 }
@@ -197,13 +205,21 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, ArithmeticError> {
                 if chars.peek() == Some(&'|') {
                     chars.next();
                     tokens.push(Token::LogicalOr);
+                } else if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::OrAssign);
                 } else {
                     tokens.push(Token::BitwiseOr);
                 }
             }
             '^' => {
                 chars.next();
-                tokens.push(Token::BitwiseXor);
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    tokens.push(Token::XorAssign);
+                } else {
+                    tokens.push(Token::BitwiseXor);
+                }
             }
             '~' => {
                 chars.next();
@@ -213,7 +229,13 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, ArithmeticError> {
                 chars.next();
                 if chars.peek() == Some(&'<') {
                     chars.next();
-                    tokens.push(Token::LeftShift);
+                    // Could be << or <<=
+                    if chars.peek() == Some(&'=') {
+                        chars.next();
+                        tokens.push(Token::LeftShiftAssign);
+                    } else {
+                        tokens.push(Token::LeftShift);
+                    }
                 } else if chars.peek() == Some(&'=') {
                     chars.next();
                     tokens.push(Token::LessEqual);
@@ -225,7 +247,13 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, ArithmeticError> {
                 chars.next();
                 if chars.peek() == Some(&'>') {
                     chars.next();
-                    tokens.push(Token::RightShift);
+                    // Could be >> or >>=
+                    if chars.peek() == Some(&'=') {
+                        chars.next();
+                        tokens.push(Token::RightShiftAssign);
+                    } else {
+                        tokens.push(Token::RightShift);
+                    }
                 } else if chars.peek() == Some(&'=') {
                     chars.next();
                     tokens.push(Token::GreaterEqual);
@@ -432,6 +460,11 @@ impl<'a> Parser<'a> {
                 Token::DivideAssign => Some("/="),
                 Token::ModuloAssign => Some("%="),
                 Token::PowerAssign => Some("**="),
+                Token::AndAssign => Some("&="),
+                Token::OrAssign => Some("|="),
+                Token::XorAssign => Some("^="),
+                Token::LeftShiftAssign => Some("<<="),
+                Token::RightShiftAssign => Some(">>="),
                 _ => None,
             };
 
@@ -467,6 +500,11 @@ impl<'a> Parser<'a> {
                         left_val % right
                     }
                     "**=" => left_val.pow(right.max(0) as u32),
+                    "&=" => left_val & right,
+                    "|=" => left_val | right,
+                    "^=" => left_val ^ right,
+                    "<<=" => left_val.wrapping_shl(right.max(0) as u32),
+                    ">>=" => left_val.wrapping_shr(right.max(0) as u32),
                     _ => unreachable!(),
                 };
 
@@ -1089,6 +1127,46 @@ mod tests {
         assert_eq!(evaluate_arithmetic("~0", &mut ctx).unwrap(), -1);
         assert_eq!(evaluate_arithmetic("1 << 4", &mut ctx).unwrap(), 16);
         assert_eq!(evaluate_arithmetic("16 >> 2", &mut ctx).unwrap(), 4);
+    }
+
+    #[test]
+    fn test_bitwise_assignment_and() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "7").unwrap(); // 0b111
+        assert_eq!(evaluate_arithmetic("x &= 3", &mut ctx).unwrap(), 3); // 0b111 & 0b011 = 0b011
+        assert_eq!(ctx.get_var("x"), Some("3"));
+    }
+
+    #[test]
+    fn test_bitwise_assignment_or() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "5").unwrap(); // 0b101
+        assert_eq!(evaluate_arithmetic("x |= 2", &mut ctx).unwrap(), 7); // 0b101 | 0b010 = 0b111
+        assert_eq!(ctx.get_var("x"), Some("7"));
+    }
+
+    #[test]
+    fn test_bitwise_assignment_xor() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "7").unwrap(); // 0b111
+        assert_eq!(evaluate_arithmetic("x ^= 3", &mut ctx).unwrap(), 4); // 0b111 ^ 0b011 = 0b100
+        assert_eq!(ctx.get_var("x"), Some("4"));
+    }
+
+    #[test]
+    fn test_bitwise_assignment_left_shift() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "1").unwrap();
+        assert_eq!(evaluate_arithmetic("x <<= 4", &mut ctx).unwrap(), 16);
+        assert_eq!(ctx.get_var("x"), Some("16"));
+    }
+
+    #[test]
+    fn test_bitwise_assignment_right_shift() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "16").unwrap();
+        assert_eq!(evaluate_arithmetic("x >>= 2", &mut ctx).unwrap(), 4);
+        assert_eq!(ctx.get_var("x"), Some("4"));
     }
 
     #[test]
