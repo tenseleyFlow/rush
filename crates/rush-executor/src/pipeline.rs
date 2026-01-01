@@ -143,8 +143,8 @@ pub fn execute_pipeline(
                             use nix::libc;
 
                             // Set up stdin from previous command if we have one
-                            if let Some(prev) = prev_stdout {
-                                // prev is Stdio, we need to extract the file descriptor
+                            if let Some(_prev) = prev_stdout {
+                                // _prev is Stdio, we need to extract the file descriptor
                                 // This is tricky - Stdio doesn't expose the raw FD easily
                                 // We'll skip stdin redirection for now in subshells
                                 // TODO: Properly handle stdin from previous pipeline element

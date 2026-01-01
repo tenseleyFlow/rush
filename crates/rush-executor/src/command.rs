@@ -693,13 +693,13 @@ fn builtin_unset(args: &[String], context: &mut rush_expand::Context) -> Executi
 
 /// readonly builtin - Mark variables as readonly
 fn builtin_readonly(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
-    let mut print_format = false;
+    let mut _print_format = false; // TODO: implement -p format output
     let mut vars_to_process = Vec::new();
 
     // Parse arguments
     for arg in args {
         if arg == "-p" {
-            print_format = true;
+            _print_format = true;
         } else if arg == "-f" {
             // Readonly functions not yet supported
             eprintln!("readonly: -f: readonly functions not yet supported");
@@ -1159,7 +1159,7 @@ fn builtin_shift(args: &[String], context: &mut rush_expand::Context) -> Executi
 fn builtin_command(args: &[String], context: &mut rush_expand::Context) -> Result<ExecutionResult, String> {
     let mut verbose = false;
     let mut very_verbose = false;
-    let mut use_default_path = false;
+    let mut _use_default_path = false; // TODO: implement -p to use default PATH
     let mut cmd_args = Vec::new();
 
     // Parse arguments
@@ -1171,7 +1171,7 @@ fn builtin_command(args: &[String], context: &mut rush_expand::Context) -> Resul
         } else if arg == "-V" {
             very_verbose = true;
         } else if arg == "-p" {
-            use_default_path = true;
+            _use_default_path = true;
         } else if arg == "--" {
             // End of options
             i += 1;
@@ -1338,7 +1338,7 @@ fn builtin_wait(args: &[String], context: &mut rush_expand::Context) -> Executio
 }
 
 /// kill builtin - Send signals to processes
-fn builtin_kill(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+fn builtin_kill(args: &[String], _context: &mut rush_expand::Context) -> ExecutionResult {
     #[cfg(unix)]
     {
         use nix::sys::signal::{kill, Signal};
@@ -2268,7 +2268,7 @@ fn builtin_eval(args: &[String], context: &mut rush_expand::Context) -> Result<E
 }
 
 /// printf builtin - formatted output
-fn builtin_printf(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+fn builtin_printf(args: &[String], _context: &mut rush_expand::Context) -> ExecutionResult {
     if args.is_empty() {
         eprintln!("printf: usage: printf format [arguments]");
         return error_result();
@@ -2619,7 +2619,7 @@ fn builtin_mapfile(args: &[String], context: &mut rush_expand::Context) -> Execu
 /// disown builtin - remove jobs from job table
 #[cfg(unix)]
 fn builtin_disown(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
-    let mut mark_no_sighup = false;
+    let mut _mark_no_sighup = false; // TODO: implement -h to prevent SIGHUP
     let mut all_jobs = false;
     let mut running_only = false;
     let mut job_specs: Vec<String> = Vec::new();
@@ -2627,7 +2627,7 @@ fn builtin_disown(args: &[String], context: &mut rush_expand::Context) -> Execut
     // Parse options
     for arg in args {
         match arg.as_str() {
-            "-h" => mark_no_sighup = true,
+            "-h" => _mark_no_sighup = true,
             "-a" => all_jobs = true,
             "-r" => running_only = true,
             _ if arg.starts_with('%') || arg.parse::<u32>().is_ok() => {

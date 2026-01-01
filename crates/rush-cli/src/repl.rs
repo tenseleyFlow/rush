@@ -1,4 +1,8 @@
-use reedline::{DefaultHinter, DefaultPrompt, FileBackedHistory, Reedline, Signal};
+use reedline::{
+    ColumnarMenu, DefaultHinter, DefaultPrompt, Emacs, FileBackedHistory,
+    KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    default_emacs_keybindings,
+};
 use rush_interactive::{RushCompleter, RushHighlighter};
 use std::process::ExitCode;
 
@@ -15,13 +19,32 @@ pub fn run_interactive() -> ExitCode {
             FileBackedHistory::with_file(1000, path).ok()
         });
 
+    // Create the completion menu
+    let completion_menu = Box::new(
+        ColumnarMenu::default()
+            .with_name("completion_menu")
+    );
+
+    // Set up keybindings with Tab completion
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+
     let mut line_editor = Reedline::create()
         .with_highlighter(Box::new(RushHighlighter::new()))
         .with_hinter(Box::new(
             DefaultHinter::default()
                 .with_style(nu_ansi_term::Style::new().fg(nu_ansi_term::Color::DarkGray))
         ))
-        .with_completer(Box::new(RushCompleter::new()));
+        .with_completer(Box::new(RushCompleter::new()))
+        .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_edit_mode(Box::new(Emacs::new(keybindings)));
 
     // Add history if we successfully created it
     if let Some(history) = history_file {

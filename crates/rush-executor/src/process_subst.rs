@@ -119,9 +119,7 @@ pub fn execute_process_subst_input(
 
             // Redirect stdout to FIFO
             let fifo_fd = fifo_file.as_raw_fd();
-            unsafe {
-                nix::unistd::dup2(fifo_fd, 1).expect("Failed to dup2 stdout");
-            }
+            nix::unistd::dup2(fifo_fd, 1).expect("Failed to dup2 stdout");
 
             // Execute the command via the command substitution executor
             let executor_opt = context.command_executor.0.clone();
@@ -192,9 +190,7 @@ pub fn execute_process_subst_output(
 
             // Redirect stdin from FIFO
             let fifo_fd = fifo_file.as_raw_fd();
-            unsafe {
-                nix::unistd::dup2(fifo_fd, 0).expect("Failed to dup2 stdin");
-            }
+            nix::unistd::dup2(fifo_fd, 0).expect("Failed to dup2 stdin");
 
             // Execute the command via the command substitution executor
             let executor_opt = context.command_executor.0.clone();
