@@ -218,11 +218,15 @@ pub(crate) fn execute_builtin(
         "bg" => Some(builtin_bg(args, context)),
         #[cfg(unix)]
         "coproc" => Some(builtin_coproc(args, context)),
+        #[cfg(unix)]
+        "disown" => Some(builtin_disown(args, context)),
         #[cfg(not(unix))]
-        "jobs" | "fg" | "bg" | "coproc" => {
+        "jobs" | "fg" | "bg" | "coproc" | "disown" => {
             eprintln!("{}: job control not supported on this platform", command);
             Some(error_result())
         }
+        "printf" => Some(builtin_printf(args, context)),
+        "mapfile" | "readarray" => Some(builtin_mapfile(args, context)),
         _ => None,
     }
 }
@@ -2261,6 +2265,419 @@ fn builtin_eval(args: &[String], context: &mut rush_expand::Context) -> Result<E
             Err(format!("parse error: {}", e))
         }
     }
+}
+
+/// printf builtin - formatted output
+fn builtin_printf(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    if args.is_empty() {
+        eprintln!("printf: usage: printf format [arguments]");
+        return error_result();
+    }
+
+    let format = &args[0];
+    let arguments = &args[1..];
+    let mut arg_index = 0;
+
+    let mut output = String::new();
+    let mut chars = format.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Handle escape sequences
+            match chars.next() {
+                Some('n') => output.push('\n'),
+                Some('t') => output.push('\t'),
+                Some('r') => output.push('\r'),
+                Some('\\') => output.push('\\'),
+                Some('"') => output.push('"'),
+                Some('\'') => output.push('\''),
+                Some('a') => output.push('\x07'), // bell
+                Some('b') => output.push('\x08'), // backspace
+                Some('f') => output.push('\x0C'), // form feed
+                Some('v') => output.push('\x0B'), // vertical tab
+                Some('0') => {
+                    // Octal escape \0nnn
+                    let mut oct = String::new();
+                    for _ in 0..3 {
+                        if let Some(&ch) = chars.peek() {
+                            if ch >= '0' && ch <= '7' {
+                                oct.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    if oct.is_empty() {
+                        output.push('\0');
+                    } else {
+                        let val = u8::from_str_radix(&oct, 8).unwrap_or(0);
+                        output.push(val as char);
+                    }
+                }
+                Some('x') => {
+                    // Hex escape \xHH
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        if let Some(&ch) = chars.peek() {
+                            if ch.is_ascii_hexdigit() {
+                                hex.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    if !hex.is_empty() {
+                        let val = u8::from_str_radix(&hex, 16).unwrap_or(0);
+                        output.push(val as char);
+                    }
+                }
+                Some(other) => {
+                    output.push('\\');
+                    output.push(other);
+                }
+                None => output.push('\\'),
+            }
+        } else if c == '%' {
+            // Handle format specifiers
+            match chars.peek() {
+                Some('%') => {
+                    chars.next();
+                    output.push('%');
+                }
+                _ => {
+                    // Parse format specifier: %[flags][width][.precision]specifier
+                    let mut spec = String::from('%');
+
+                    // Flags
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '-' || ch == '+' || ch == ' ' || ch == '#' || ch == '0' {
+                            spec.push(chars.next().unwrap());
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Width
+                    while let Some(&ch) = chars.peek() {
+                        if ch.is_ascii_digit() {
+                            spec.push(chars.next().unwrap());
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Precision
+                    if chars.peek() == Some(&'.') {
+                        spec.push(chars.next().unwrap());
+                        while let Some(&ch) = chars.peek() {
+                            if ch.is_ascii_digit() {
+                                spec.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Specifier
+                    let specifier = chars.next().unwrap_or('s');
+                    let arg = arguments.get(arg_index).map(|s| s.as_str()).unwrap_or("");
+                    arg_index += 1;
+
+                    match specifier {
+                        's' => {
+                            // String - handle width/precision
+                            output.push_str(arg);
+                        }
+                        'd' | 'i' => {
+                            let val: i64 = arg.parse().unwrap_or(0);
+                            output.push_str(&val.to_string());
+                        }
+                        'u' => {
+                            let val: u64 = arg.parse().unwrap_or(0);
+                            output.push_str(&val.to_string());
+                        }
+                        'o' => {
+                            let val: u64 = arg.parse().unwrap_or(0);
+                            output.push_str(&format!("{:o}", val));
+                        }
+                        'x' => {
+                            let val: u64 = arg.parse().unwrap_or(0);
+                            output.push_str(&format!("{:x}", val));
+                        }
+                        'X' => {
+                            let val: u64 = arg.parse().unwrap_or(0);
+                            output.push_str(&format!("{:X}", val));
+                        }
+                        'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
+                            let val: f64 = arg.parse().unwrap_or(0.0);
+                            output.push_str(&format!("{}", val));
+                        }
+                        'c' => {
+                            if let Some(ch) = arg.chars().next() {
+                                output.push(ch);
+                            }
+                        }
+                        'b' => {
+                            // %b - interpret backslash escapes in the argument
+                            let mut arg_chars = arg.chars().peekable();
+                            while let Some(ac) = arg_chars.next() {
+                                if ac == '\\' {
+                                    match arg_chars.next() {
+                                        Some('n') => output.push('\n'),
+                                        Some('t') => output.push('\t'),
+                                        Some('r') => output.push('\r'),
+                                        Some('\\') => output.push('\\'),
+                                        Some(other) => {
+                                            output.push('\\');
+                                            output.push(other);
+                                        }
+                                        None => output.push('\\'),
+                                    }
+                                } else {
+                                    output.push(ac);
+                                }
+                            }
+                        }
+                        'q' => {
+                            // %q - quote the argument for shell reuse
+                            output.push('\'');
+                            for ch in arg.chars() {
+                                if ch == '\'' {
+                                    output.push_str("'\\''");
+                                } else {
+                                    output.push(ch);
+                                }
+                            }
+                            output.push('\'');
+                        }
+                        _ => {
+                            // Unknown specifier, output as-is
+                            output.push('%');
+                            output.push(specifier);
+                        }
+                    }
+                }
+            }
+        } else {
+            output.push(c);
+        }
+    }
+
+    print!("{}", output);
+    success_result()
+}
+
+/// mapfile/readarray builtin - read lines into an array
+fn builtin_mapfile(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    use std::io::{self, BufRead, Read};
+
+    let mut delimiter = '\n';
+    let mut count: Option<usize> = None;
+    let mut origin = 0usize;
+    let mut skip = 0usize;
+    let mut remove_delimiter = false;
+    let mut array_name = String::from("MAPFILE");
+
+    // Parse options
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-d" => {
+                i += 1;
+                if i < args.len() {
+                    delimiter = args[i].chars().next().unwrap_or('\n');
+                }
+            }
+            "-n" => {
+                i += 1;
+                if i < args.len() {
+                    count = args[i].parse().ok();
+                }
+            }
+            "-O" => {
+                i += 1;
+                if i < args.len() {
+                    origin = args[i].parse().unwrap_or(0);
+                }
+            }
+            "-s" => {
+                i += 1;
+                if i < args.len() {
+                    skip = args[i].parse().unwrap_or(0);
+                }
+            }
+            "-t" => {
+                remove_delimiter = true;
+            }
+            arg if !arg.starts_with('-') => {
+                array_name = arg.to_string();
+            }
+            _ => {
+                // Unknown option, skip
+            }
+        }
+        i += 1;
+    }
+
+    let stdin = io::stdin();
+    let reader = stdin.lock();
+    let mut lines: Vec<String> = Vec::new();
+    let mut lines_read = 0usize;
+
+    if delimiter == '\n' {
+        for line_result in reader.lines() {
+            match line_result {
+                Ok(line) => {
+                    if lines_read < skip {
+                        lines_read += 1;
+                        continue;
+                    }
+
+                    if let Some(max) = count {
+                        if lines.len() >= max {
+                            break;
+                        }
+                    }
+
+                    let content = if remove_delimiter {
+                        line
+                    } else {
+                        format!("{}\n", line)
+                    };
+                    lines.push(content);
+                    lines_read += 1;
+                }
+                Err(_) => break,
+            }
+        }
+    } else {
+        // Custom delimiter
+        let mut buffer = String::new();
+        for byte_result in reader.bytes() {
+            match byte_result {
+                Ok(byte) => {
+                    let ch = byte as char;
+                    if ch == delimiter {
+                        if lines_read < skip {
+                            buffer.clear();
+                            lines_read += 1;
+                            continue;
+                        }
+
+                        if let Some(max) = count {
+                            if lines.len() >= max {
+                                break;
+                            }
+                        }
+
+                        let content = if remove_delimiter {
+                            buffer.clone()
+                        } else {
+                            format!("{}{}", buffer, delimiter)
+                        };
+                        lines.push(content);
+                        buffer.clear();
+                        lines_read += 1;
+                    } else {
+                        buffer.push(ch);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        // Handle remaining content
+        if !buffer.is_empty() && (count.is_none() || lines.len() < count.unwrap()) {
+            if lines_read >= skip {
+                lines.push(buffer);
+            }
+        }
+    }
+
+    // Build array starting at origin index
+    let mut array_values: Vec<String> = Vec::new();
+
+    // Preserve existing elements if origin > 0
+    if origin > 0 {
+        if let Some(rush_expand::context::ArrayType::Indexed(existing)) = context.arrays.get(&array_name) {
+            for i in 0..origin {
+                array_values.push(existing.get(i).cloned().unwrap_or_default());
+            }
+        } else {
+            for _ in 0..origin {
+                array_values.push(String::new());
+            }
+        }
+    }
+
+    array_values.extend(lines);
+
+    context.arrays.insert(array_name, rush_expand::context::ArrayType::Indexed(array_values));
+
+    success_result()
+}
+
+/// disown builtin - remove jobs from job table
+#[cfg(unix)]
+fn builtin_disown(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut mark_no_sighup = false;
+    let mut all_jobs = false;
+    let mut running_only = false;
+    let mut job_specs: Vec<String> = Vec::new();
+
+    // Parse options
+    for arg in args {
+        match arg.as_str() {
+            "-h" => mark_no_sighup = true,
+            "-a" => all_jobs = true,
+            "-r" => running_only = true,
+            _ if arg.starts_with('%') || arg.parse::<u32>().is_ok() => {
+                job_specs.push(arg.clone());
+            }
+            _ => {
+                eprintln!("disown: {}: invalid option", arg);
+                return error_result();
+            }
+        }
+    }
+
+    // If -a flag, disown all jobs
+    if all_jobs {
+        context.job_list.disown_all(running_only);
+        return success_result();
+    }
+
+    // If no job specs and no -a, disown current job
+    if job_specs.is_empty() {
+        if let Some(current_job) = context.job_list.current_job_id() {
+            context.job_list.disown_job(current_job);
+        }
+        return success_result();
+    }
+
+    // Disown specific jobs
+    for spec in job_specs {
+        let job_id = if spec.starts_with('%') {
+            // Job ID format: %n or %+, %-, etc.
+            let id_str = &spec[1..];
+            if id_str == "+" || id_str == "%" {
+                context.job_list.current_job_id()
+            } else if id_str == "-" {
+                context.job_list.previous_job()
+            } else {
+                id_str.parse::<u32>().ok()
+            }
+        } else {
+            spec.parse::<u32>().ok()
+        };
+
+        if let Some(id) = job_id {
+            context.job_list.disown_job(id);
+        } else {
+            eprintln!("disown: {}: no such job", spec);
+        }
+    }
+
+    success_result()
 }
 
 /// Helper to execute a parsed statement

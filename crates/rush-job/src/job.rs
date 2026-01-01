@@ -208,6 +208,39 @@ impl JobList {
     pub fn shell_pgid(&self) -> Pid {
         self.shell_pgid
     }
+
+    /// Get the current job ID
+    pub fn current_job_id(&self) -> Option<JobId> {
+        self.current_job
+    }
+
+    /// Get the previous job ID (second most recent)
+    pub fn previous_job(&self) -> Option<JobId> {
+        // Return the second highest job ID that isn't the current one
+        let mut job_ids: Vec<_> = self.jobs.keys().copied().collect();
+        job_ids.sort_by(|a, b| b.cmp(a)); // Descending order
+
+        job_ids.into_iter().find(|&id| Some(id) != self.current_job)
+    }
+
+    /// Disown a specific job (remove from job control without killing it)
+    pub fn disown_job(&mut self, id: JobId) {
+        self.remove_job(id);
+    }
+
+    /// Disown all jobs, optionally only running jobs
+    pub fn disown_all(&mut self, running_only: bool) {
+        let to_disown: Vec<_> = self
+            .jobs
+            .iter()
+            .filter(|(_, job)| !running_only || job.is_running())
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in to_disown {
+            self.remove_job(id);
+        }
+    }
 }
 
 #[cfg(test)]
