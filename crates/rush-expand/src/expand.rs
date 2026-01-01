@@ -444,9 +444,9 @@ mod tests {
 
     #[test]
     fn test_expand_literal() {
-        let ctx = Context::empty();
+        let mut ctx = Context::empty();
         let word = Word::from_literal("hello");
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "hello");
     }
 
@@ -459,30 +459,30 @@ mod tests {
             "USER".to_string(),
         ))]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "alice");
     }
 
     #[test]
     fn test_expand_undefined_var() {
-        let ctx = Context::empty();
+        let mut ctx = Context::empty();
         let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::Simple(
             "UNDEFINED".to_string(),
         ))]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "");
     }
 
     #[test]
     fn test_expand_var_with_default() {
-        let ctx = Context::empty();
+        let mut ctx = Context::empty();
         let word = Word::new(vec![WordPart::VarExpansion(VarExpansion::WithDefault {
             name: "UNDEFINED".to_string(),
             default: Box::new(Word::from_literal("default_value")),
         })]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "default_value");
     }
 
@@ -497,7 +497,7 @@ mod tests {
             WordPart::Literal("!".to_string()),
         ]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "Hello world!");
     }
 
@@ -513,28 +513,28 @@ mod tests {
             Word::from_literal("-la"),
         ];
 
-        let result = expand_words(&words, &ctx).unwrap();
+        let result = expand_words(&words, &mut ctx).unwrap();
         assert_eq!(result, vec!["ls", "-la"]);
     }
 
     #[test]
     fn test_expand_command_substitution() {
-        let ctx = Context::empty();
+        let mut ctx = Context::empty();
         let word = Word::new(vec![WordPart::CommandSubstitution("echo hello".to_string())]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "hello");
     }
 
     #[test]
     fn test_expand_mixed_with_command_subst() {
-        let ctx = Context::empty();
+        let mut ctx = Context::empty();
         let word = Word::new(vec![
             WordPart::Literal("Result: ".to_string()),
             WordPart::CommandSubstitution("echo success".to_string()),
         ]);
 
-        let result = expand_word(&word, &ctx).unwrap();
+        let result = expand_word(&word, &mut ctx).unwrap();
         assert_eq!(result, "Result: success");
     }
 }
