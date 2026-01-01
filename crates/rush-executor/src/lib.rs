@@ -12,7 +12,7 @@ pub mod terminal;
 pub mod test_builtin;
 
 pub use background::{execute_pipeline_background, execute_simple_background};
-pub use command::{execute_command, ExecutionError, ExecutionResult};
+pub use command::{execute_command, execute_statement, ExecutionError, ExecutionResult};
 #[cfg(unix)]
 pub use command::JobControlInfo;
 pub use command_subst_exec::execute_for_substitution;

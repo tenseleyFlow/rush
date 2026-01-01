@@ -1,3 +1,4 @@
+use crate::completion_spec::{with_registry, CompletionSource};
 use reedline::{Completer, Span, Suggestion};
 use std::env;
 use std::fs;
@@ -7,6 +8,7 @@ use std::path::PathBuf;
 ///
 /// Provides context-aware completions:
 /// - Command names from PATH (when first word)
+/// - Command-specific completions (from `complete` builtin)
 /// - File/directory names (for arguments)
 /// - Variable names (when typing $VAR)
 pub struct RushCompleter;
@@ -65,7 +67,8 @@ impl RushCompleter {
             "read", "shift", "wait", "kill", "times", "umask", "hash",
             "getopts", "exec", "command", "jobs", "fg", "bg",
             "coproc", "disown", "printf", "mapfile", "readarray",
-            "break", "continue", "return", "source", ".",
+            "break", "continue", "return", "source", ".", "complete",
+            "pushd", "popd", "dirs",
         ];
         commands.extend(builtins.iter().map(|s| s.to_string()));
 
@@ -166,6 +169,101 @@ impl RushCompleter {
             .unwrap_or(0);
         (start, &line[start..pos])
     }
+
+    /// Parse the command line to get command name and argument position
+    fn parse_command_line(line: &str, pos: usize) -> Option<(String, Vec<String>, usize)> {
+        let before_cursor = &line[..pos];
+        let words: Vec<&str> = before_cursor.split_whitespace().collect();
+
+        if words.is_empty() {
+            return None;
+        }
+
+        let command = words[0].to_string();
+        let args: Vec<String> = words[1..].iter().map(|s| s.to_string()).collect();
+        let arg_index = if args.is_empty() { 0 } else { args.len() - 1 };
+
+        Some((command, args, arg_index))
+    }
+
+    /// Get command-specific completions from the registry
+    fn get_command_completions(command: &str, partial: &str) -> Vec<(String, Option<String>)> {
+        let mut completions = Vec::new();
+
+        with_registry(|registry| {
+            if let Some(specs) = registry.get(command) {
+                for spec in specs {
+                    // TODO: Check condition if specified
+                    // For now, we'll skip condition checking
+
+                    match &spec.source {
+                        CompletionSource::Static(items) => {
+                            for item in items {
+                                if item.starts_with(partial) {
+                                    completions.push((
+                                        item.clone(),
+                                        spec.description.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                        CompletionSource::Dynamic(cmd) => {
+                            // Execute the command and use output lines as completions
+                            if let Ok(output) = std::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(cmd)
+                                .output()
+                            {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                for line in stdout.lines() {
+                                    let trimmed = line.trim();
+                                    if !trimmed.is_empty() && trimmed.starts_with(partial) {
+                                        completions.push((
+                                            trimmed.to_string(),
+                                            spec.description.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        CompletionSource::ShortOption(c) => {
+                            let opt = format!("-{}", c);
+                            if opt.starts_with(partial) {
+                                completions.push((opt, spec.description.clone()));
+                            }
+                        }
+                        CompletionSource::LongOption(s) => {
+                            let opt = format!("--{}", s);
+                            if opt.starts_with(partial) {
+                                completions.push((opt, spec.description.clone()));
+                            }
+                        }
+                        CompletionSource::Option { short, long } => {
+                            if let Some(c) = short {
+                                let opt = format!("-{}", c);
+                                if opt.starts_with(partial) {
+                                    completions.push((opt, spec.description.clone()));
+                                }
+                            }
+                            if let Some(l) = long {
+                                let opt = format!("--{}", l);
+                                if opt.starts_with(partial) {
+                                    completions.push((opt, spec.description.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        completions
+    }
+
+    /// Check if a command has file completion disabled
+    fn has_no_files(command: &str) -> bool {
+        with_registry(|registry| registry.has_no_files(command))
+    }
 }
 
 impl Default for RushCompleter {
@@ -199,19 +297,53 @@ impl Completer for RushCompleter {
                 }
             }
         } else {
-            // Complete file/directory names
-            // When partial is empty (e.g., "ls "), show all non-hidden files
-            for file in Self::get_file_completions(partial) {
-                suggestions.push(Suggestion {
-                    value: file.clone(),
-                    description: None,
-                    style: None,
-                    extra: None,
-                    span,
-                    append_whitespace: !file.ends_with('/'),
-                });
+            // Parse the command line to get the command being completed
+            if let Some((command, _args, _arg_idx)) = Self::parse_command_line(line, pos) {
+                // Get command-specific completions
+                let cmd_completions = Self::get_command_completions(&command, partial);
+
+                for (value, desc) in cmd_completions {
+                    suggestions.push(Suggestion {
+                        value,
+                        description: desc,
+                        style: None,
+                        extra: None,
+                        span,
+                        append_whitespace: true,
+                    });
+                }
+
+                // Add file completions unless disabled for this command
+                if !Self::has_no_files(&command) {
+                    for file in Self::get_file_completions(partial) {
+                        suggestions.push(Suggestion {
+                            value: file.clone(),
+                            description: None,
+                            style: None,
+                            extra: None,
+                            span,
+                            append_whitespace: !file.ends_with('/'),
+                        });
+                    }
+                }
+            } else {
+                // Fallback to file completions if we can't parse the command
+                for file in Self::get_file_completions(partial) {
+                    suggestions.push(Suggestion {
+                        value: file.clone(),
+                        description: None,
+                        style: None,
+                        extra: None,
+                        span,
+                        append_whitespace: !file.ends_with('/'),
+                    });
+                }
             }
         }
+
+        // Remove duplicates (command completions might overlap with files)
+        suggestions.sort_by(|a, b| a.value.cmp(&b.value));
+        suggestions.dedup_by(|a, b| a.value == b.value);
 
         suggestions
     }

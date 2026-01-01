@@ -4,7 +4,6 @@
 //! enabling $(command) substitution without relying on external shells.
 
 use rush_expand::Context;
-use std::io::Write;
 
 /// Execute a command string internally and capture its stdout
 ///
@@ -13,18 +12,18 @@ use std::io::Write;
 ///
 /// The function:
 /// 1. Parses the command string using rush-parser
-/// 2. Captures stdout to a buffer
-/// 3. Executes the command using rush-executor
-/// 4. Returns the captured output
+/// 2. Forks a child process
+/// 3. The child executes the command with stdout redirected to a pipe
+/// 4. The parent reads and returns the captured output
 pub fn execute_for_substitution(cmd: &str, context: &mut Context) -> Result<String, String> {
     // Parse the command
     let statement = rush_parser::parse_line(cmd)
         .map_err(|e| format!("Parse error: {}", e))?;
 
-    // Use a pipe to capture stdout
+    // Use fork + pipe to capture stdout (like bash does)
     #[cfg(unix)]
     {
-        execute_with_capture_unix(statement, context)
+        execute_with_fork_capture(statement, context)
     }
 
     #[cfg(not(unix))]
@@ -36,82 +35,111 @@ pub fn execute_for_substitution(cmd: &str, context: &mut Context) -> Result<Stri
 }
 
 #[cfg(unix)]
-fn execute_with_capture_unix(
+fn execute_with_fork_capture(
     statement: rush_parser::Statement,
     context: &mut Context,
 ) -> Result<String, String> {
     use nix::libc;
-    use nix::unistd::{pipe, dup, dup2};
+    use nix::unistd::{pipe, dup2, fork, ForkResult};
+    use nix::sys::wait::{waitpid, WaitStatus};
     use std::os::unix::io::{RawFd, FromRawFd, IntoRawFd};
-    use std::io::Read;
+    use std::io::{Read, Write};
 
     const STDOUT_FD: RawFd = 1;
 
     // Create a pipe for capturing output
     let (read_fd, write_fd) = pipe().map_err(|e| format!("Failed to create pipe: {}", e))?;
-
-    // Get raw fds and take ownership to prevent automatic close
     let read_raw_fd = read_fd.into_raw_fd();
     let write_raw_fd = write_fd.into_raw_fd();
 
-    // Save the original stdout
-    let saved_stdout = dup(STDOUT_FD).map_err(|e| format!("Failed to dup stdout: {}", e))?;
-    let saved_stdout_raw = saved_stdout.into_raw_fd();
+    // Fork to execute the command in a subprocess
+    match unsafe { fork() } {
+        Ok(ForkResult::Child) => {
+            // Child process: redirect stdout to pipe and execute
 
-    // Redirect stdout to the write end of the pipe
-    dup2(write_raw_fd, STDOUT_FD).map_err(|e| format!("Failed to redirect stdout: {}", e))?;
+            // Close the read end of the pipe (child only writes)
+            unsafe { libc::close(read_raw_fd); }
 
-    // Close the write_fd as we've duplicated it to stdout
-    // (write_fd is now owned by stdout, so we close the original)
-    unsafe { libc::close(write_raw_fd); }
+            // Redirect stdout to the write end of the pipe
+            if let Err(_) = dup2(write_raw_fd, STDOUT_FD) {
+                std::process::exit(1);
+            }
 
-    // Execute the command
-    let exec_result = match statement {
-        rush_parser::Statement::Complete(cmd) => {
-            crate::control_flow::execute_complete_command(&cmd, context)
-        }
-        rush_parser::Statement::Script(commands) => {
-            let mut last_result = crate::command::success_result();
-            for cmd in &commands {
-                match crate::control_flow::execute_complete_command(cmd, context) {
-                    Ok(result) => last_result = result,
-                    Err(e) => {
-                        // Restore stdout before returning error
-                        let _ = dup2(saved_stdout_raw, STDOUT_FD);
-                        unsafe {
-                            libc::close(saved_stdout_raw);
-                            libc::close(read_raw_fd);
-                        }
-                        return Err(format!("Execution error: {}", e));
+            // Close the original write_fd (now that stdout points to it)
+            unsafe { libc::close(write_raw_fd); }
+
+            // Execute the command
+            let exit_code = match statement {
+                rush_parser::Statement::Complete(cmd) => {
+                    match crate::control_flow::execute_complete_command(&cmd, context) {
+                        Ok(result) => result.exit_code(),
+                        Err(_) => 1,
                     }
                 }
-            }
-            Ok(last_result)
+                rush_parser::Statement::Script(commands) => {
+                    let mut last_code = 0;
+                    for cmd in &commands {
+                        match crate::control_flow::execute_complete_command(cmd, context) {
+                            Ok(result) => last_code = result.exit_code(),
+                            Err(_) => {
+                                last_code = 1;
+                                break;
+                            }
+                        }
+                    }
+                    last_code
+                }
+                rush_parser::Statement::Empty => 0,
+            };
+
+            // Ensure all output is flushed before exiting
+            let _ = std::io::stdout().flush();
+
+            // Exit the child process
+            std::process::exit(exit_code);
         }
-        rush_parser::Statement::Empty => Ok(crate::command::success_result()),
-    };
+        Ok(ForkResult::Parent { child }) => {
+            // Parent process: close write end and read from pipe
 
-    // Flush stdout to ensure all data is written to the pipe
-    let _ = std::io::stdout().flush();
+            // Close the write end (parent only reads)
+            unsafe { libc::close(write_raw_fd); }
 
-    // Restore the original stdout
-    dup2(saved_stdout_raw, STDOUT_FD).map_err(|e| format!("Failed to restore stdout: {}", e))?;
-    unsafe { libc::close(saved_stdout_raw); }
+            // Read all output from the pipe
+            let mut output = String::new();
+            let mut reader = unsafe { std::fs::File::from_raw_fd(read_raw_fd) };
+            if let Err(e) = reader.read_to_string(&mut output) {
+                return Err(format!("Failed to read output: {}", e));
+            }
 
-    // Check execution result
-    exec_result.map_err(|e| format!("Execution error: {}", e))?;
+            // Wait for child to complete
+            match waitpid(child, None) {
+                Ok(WaitStatus::Exited(_, code)) => {
+                    context.set_exit_status(code);
+                }
+                Ok(_) => {
+                    context.set_exit_status(0);
+                }
+                Err(e) => {
+                    return Err(format!("Failed to wait for child: {}", e));
+                }
+            }
 
-    // Read the captured output from the pipe
-    let mut output = String::new();
-    let mut reader = unsafe { std::fs::File::from_raw_fd(read_raw_fd) };
-    reader.read_to_string(&mut output).map_err(|e| format!("Failed to read output: {}", e))?;
+            // Bash behavior: trim trailing newlines from command substitution
+            while output.ends_with('\n') {
+                output.pop();
+            }
 
-    // Bash behavior: trim trailing newlines from command substitution
-    while output.ends_with('\n') {
-        output.pop();
+            Ok(output)
+        }
+        Err(e) => {
+            // Fork failed, clean up
+            unsafe {
+                libc::close(read_raw_fd);
+                libc::close(write_raw_fd);
+            }
+            Err(format!("Failed to fork: {}", e))
+        }
     }
-
-    Ok(output)
 }
 
 #[cfg(test)]

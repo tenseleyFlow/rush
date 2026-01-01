@@ -28,7 +28,7 @@ crossterm = "0.28"
 nu-ansi-term = "0.50"
 
 # System calls (Unix)
-nix = { version = "0.29", features = ["process", "signal", "term", "fs", "resource"] }
+nix = { version = "0.29", features = ["process", "signal", "term", "fs", "resource", "user"] }
 
 # Pattern matching
 globset = "0.4"
@@ -41,6 +41,12 @@ anyhow = "1.0"
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
+
+# Time/Date
+chrono = "0.4"
+
+# System info
+hostname = "0.4"
 
 # Testing
 proptest = "1.4"

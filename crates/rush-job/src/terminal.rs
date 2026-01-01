@@ -1,5 +1,11 @@
+use nix::sys::termios::{tcgetattr, tcsetattr, SetArg, Termios};
 use nix::unistd::{tcgetpgrp, tcsetpgrp, Pid};
 use std::io;
+use std::os::fd::AsFd;
+use std::sync::Mutex;
+
+/// Saved terminal attributes for restoration
+static SAVED_TERMIOS: Mutex<Option<Termios>> = Mutex::new(None);
 
 /// Give terminal control to a process group
 ///
@@ -8,6 +14,39 @@ use std::io;
 pub fn give_terminal_to(pgid: Pid) -> Result<(), nix::Error> {
     let stdin = io::stdin();
     tcsetpgrp(&stdin, pgid)
+}
+
+/// Save current terminal attributes
+/// Call this at shell startup to preserve the initial terminal state
+pub fn save_terminal_attrs() -> Result<(), nix::Error> {
+    let stdin = io::stdin();
+    let termios = tcgetattr(stdin.as_fd())?;
+    let mut saved = SAVED_TERMIOS.lock().unwrap();
+    *saved = Some(termios);
+    Ok(())
+}
+
+/// Restore saved terminal attributes
+/// Call this when the shell exits or after a child misbehaves
+pub fn restore_terminal_attrs() -> Result<(), nix::Error> {
+    let saved = SAVED_TERMIOS.lock().unwrap();
+    if let Some(ref termios) = *saved {
+        let stdin = io::stdin();
+        tcsetattr(stdin.as_fd(), SetArg::TCSADRAIN, termios)?;
+    }
+    Ok(())
+}
+
+/// Get current terminal attributes
+pub fn get_terminal_attrs() -> Result<Termios, nix::Error> {
+    let stdin = io::stdin();
+    tcgetattr(stdin.as_fd())
+}
+
+/// Set terminal attributes
+pub fn set_terminal_attrs(termios: &Termios) -> Result<(), nix::Error> {
+    let stdin = io::stdin();
+    tcsetattr(stdin.as_fd(), SetArg::TCSADRAIN, termios)
 }
 
 /// Get the current foreground process group of the terminal

@@ -68,9 +68,13 @@ pub fn execute_pipeline(
     }
 
     // Build and spawn all commands in the pipeline
+    // We track raw file descriptors for proper subshell stdin handling
     let mut children = Vec::new();
-    let mut subshell_pids = Vec::new(); // Track subshell PIDs separately
-    let mut prev_stdout = None;
+    let mut subshell_pids = Vec::new();
+    #[cfg(unix)]
+    let mut prev_stdout_fd: Option<i32> = None;
+    #[cfg(not(unix))]
+    let mut prev_stdout: Option<Stdio> = None;
 
     for (i, element) in pipeline.commands.iter().enumerate() {
         let is_first = i == 0;
@@ -98,10 +102,22 @@ pub fn execute_pipeline(
                 cmd.args(args);
 
                 // Set up stdin
-                if is_first {
-                    cmd.stdin(Stdio::inherit());
-                } else if let Some(prev_out) = prev_stdout.take() {
-                    cmd.stdin(prev_out);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::io::FromRawFd;
+                    if is_first {
+                        cmd.stdin(Stdio::inherit());
+                    } else if let Some(fd) = prev_stdout_fd.take() {
+                        cmd.stdin(Stdio::from(unsafe { std::fs::File::from_raw_fd(fd) }));
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if is_first {
+                        cmd.stdin(Stdio::inherit());
+                    } else if let Some(prev_out) = prev_stdout.take() {
+                        cmd.stdin(prev_out);
+                    }
                 }
 
                 // Set up stdout
@@ -116,7 +132,15 @@ pub fn execute_pipeline(
 
                 let mut child = cmd.spawn()?;
                 if !is_last {
-                    prev_stdout = child.stdout.take().map(Stdio::from);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::IntoRawFd;
+                        prev_stdout_fd = child.stdout.take().map(|f| f.into_raw_fd());
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        prev_stdout = child.stdout.take().map(Stdio::from);
+                    }
                 }
                 children.push(child);
             }
@@ -125,7 +149,10 @@ pub fn execute_pipeline(
                 #[cfg(unix)]
                 {
                     use nix::unistd::{fork, ForkResult, pipe as nix_pipe, dup2};
-                    use std::os::unix::io::{IntoRawFd, FromRawFd};
+                    use std::os::unix::io::IntoRawFd;
+
+                    // Take stdin fd from previous command
+                    let stdin_fd = prev_stdout_fd.take();
 
                     // Create pipe for stdout if not last
                     let pipe_fds = if !is_last {
@@ -142,12 +169,10 @@ pub fn execute_pipeline(
                             // Child process: execute subshell with redirected I/O
                             use nix::libc;
 
-                            // Set up stdin from previous command if we have one
-                            if let Some(_prev) = prev_stdout {
-                                // _prev is Stdio, we need to extract the file descriptor
-                                // This is tricky - Stdio doesn't expose the raw FD easily
-                                // We'll skip stdin redirection for now in subshells
-                                // TODO: Properly handle stdin from previous pipeline element
+                            // Set up stdin from previous command
+                            if let Some(fd) = stdin_fd {
+                                let _ = dup2(fd, 0); // Redirect stdin
+                                unsafe { libc::close(fd); }
                             }
 
                             // Set up stdout to pipe if not last
@@ -162,11 +187,17 @@ pub fn execute_pipeline(
                             std::process::exit(exit_code);
                         }
                         Ok(ForkResult::Parent { child }) => {
-                            // Parent process: save pipe and track child PID
+                            // Parent process: close stdin fd and save stdout pipe
                             use nix::libc;
+
+                            // Close the stdin fd in parent (child has its own copy)
+                            if let Some(fd) = stdin_fd {
+                                unsafe { libc::close(fd); }
+                            }
+
                             if let Some((read_fd, write_fd)) = pipe_fds {
                                 unsafe { libc::close(write_fd); }
-                                prev_stdout = Some(Stdio::from(unsafe { std::fs::File::from_raw_fd(read_fd) }));
+                                prev_stdout_fd = Some(read_fd);
                             }
 
                             // Track the subshell PID for later waiting

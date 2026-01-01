@@ -28,6 +28,10 @@ struct Cli {
     #[arg(short = 'c', value_name = "COMMAND")]
     command: Option<String>,
 
+    /// Run as a login shell
+    #[arg(short = 'l', long = "login")]
+    login: bool,
+
     /// Script file to execute
     #[arg(value_name = "FILE")]
     file: Option<String>,
@@ -69,7 +73,12 @@ fn main() -> ExitCode {
             eprintln!("rush: warning: failed to set up job control: {}", e);
         }
 
-        repl::run_interactive()
+        // Check if this is a login shell (either -l flag or argv[0] starts with '-')
+        let is_login = cli.login || std::env::args().next()
+            .map(|arg| arg.starts_with('-'))
+            .unwrap_or(false);
+
+        repl::run_interactive(is_login)
     } else {
         // Non-interactive mode (stdin)
         execute_stdin()
@@ -79,10 +88,16 @@ fn main() -> ExitCode {
 /// Set up the shell for interactive use with job control
 #[cfg(unix)]
 fn setup_interactive_shell() -> Result<(), String> {
-    use rush_job::setup_shell_terminal;
+    use rush_job::{save_terminal_attrs, setup_job_control_signals, setup_shell_terminal};
+
+    // Save terminal attributes for later restoration
+    save_terminal_attrs().map_err(|e| format!("save terminal attrs: {}", e))?;
 
     // Put shell in its own process group and take terminal control
     setup_shell_terminal().map_err(|e| e.to_string())?;
+
+    // Set up job control signals (SIGWINCH, SIGHUP, SIGQUIT, etc.)
+    setup_job_control_signals().map_err(|e| format!("job control signals: {}", e))?;
 
     Ok(())
 }

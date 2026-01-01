@@ -97,6 +97,8 @@ pub struct Context {
     local_scopes: Vec<HashMap<String, String>>,
     /// Exit status of last command
     pub last_exit_status: i32,
+    /// Flag indicating the shell should exit (set by `exit` builtin)
+    pub exit_requested: Option<i32>,
     /// Shell functions (name -> body)
     pub functions: HashMap<String, rush_parser::ast::FunctionDef>,
     /// Arrays (name -> indexed or associative)
@@ -126,6 +128,8 @@ pub struct Context {
     /// Internal command executor (for command substitution)
     /// If set, command substitution will use this instead of sh -c
     pub command_executor: CommandExecutorWrapper,
+    /// Directory stack for pushd/popd
+    pub dir_stack: Vec<String>,
 }
 
 impl Context {
@@ -136,6 +140,7 @@ impl Context {
             exported: HashMap::new(),
             local_scopes: Vec::new(),
             last_exit_status: 0,
+            exit_requested: None,
             functions: HashMap::new(),
             arrays: HashMap::new(),
             associative_array_names: HashSet::new(),
@@ -151,6 +156,7 @@ impl Context {
             #[cfg(unix)]
             coproc: None,
             command_executor: CommandExecutorWrapper(None),
+            dir_stack: Vec::new(),
         };
 
         // Initialize with environment variables
@@ -169,6 +175,7 @@ impl Context {
             exported: HashMap::new(),
             local_scopes: Vec::new(),
             last_exit_status: 0,
+            exit_requested: None,
             functions: HashMap::new(),
             arrays: HashMap::new(),
             associative_array_names: HashSet::new(),
@@ -184,6 +191,7 @@ impl Context {
             #[cfg(unix)]
             coproc: None,
             command_executor: CommandExecutorWrapper(None),
+            dir_stack: Vec::new(),
         }
     }
 

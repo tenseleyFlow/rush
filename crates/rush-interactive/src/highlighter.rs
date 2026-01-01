@@ -49,7 +49,14 @@ impl RushHighlighter {
     fn is_builtin(command: &str) -> bool {
         matches!(
             command,
-            "cd" | "pwd" | "exit" | "jobs" | "fg" | "bg" | "test" | "["
+            "cd" | "pwd" | "exit" | "true" | "false" | "test" | "[" | ":"
+                | "eval" | "alias" | "unalias" | "trap" | "set" | "shopt"
+                | "export" | "unset" | "readonly" | "declare" | "typeset" | "local"
+                | "read" | "shift" | "wait" | "kill" | "times" | "umask" | "hash"
+                | "getopts" | "exec" | "command" | "jobs" | "fg" | "bg"
+                | "coproc" | "disown" | "printf" | "mapfile" | "readarray"
+                | "break" | "continue" | "return" | "source" | "."
+                | "complete" | "pushd" | "popd" | "dirs"
         )
     }
 

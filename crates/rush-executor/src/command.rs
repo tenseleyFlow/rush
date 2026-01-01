@@ -126,23 +126,14 @@ pub(crate) fn execute_builtin(
         "exit" => {
             let code = args.first()
                 .and_then(|s| s.parse::<i32>().ok())
-                .unwrap_or(0);
-            std::process::exit(code);
+                .unwrap_or(context.last_exit_status);
+            context.exit_requested = Some(code);
+            Some(exit_code_to_result(code))
         }
         "true" => Some(success_result()),
         "false" => Some(error_result()),
         ":" => Some(success_result()),
-        "cd" => {
-            let default_home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            let dir = args.first()
-                .map(|s| s.as_str())
-                .unwrap_or(&default_home);
-
-            match env::set_current_dir(dir) {
-                Ok(_) => Some(success_result()),
-                Err(_) => Some(error_result()),
-            }
-        }
+        "cd" => Some(builtin_cd(args, context)),
         "pwd" => {
             match env::current_dir() {
                 Ok(path) => {
@@ -225,8 +216,13 @@ pub(crate) fn execute_builtin(
             eprintln!("{}: job control not supported on this platform", command);
             Some(error_result())
         }
+        "echo" => Some(builtin_echo(args)),
         "printf" => Some(builtin_printf(args, context)),
         "mapfile" | "readarray" => Some(builtin_mapfile(args, context)),
+        "complete" => Some(builtin_complete(args, context)),
+        "pushd" => Some(builtin_pushd(args, context)),
+        "popd" => Some(builtin_popd(args, context)),
+        "dirs" => Some(builtin_dirs(args, context)),
         _ => None,
     }
 }
@@ -2267,6 +2263,364 @@ fn builtin_eval(args: &[String], context: &mut rush_expand::Context) -> Result<E
     }
 }
 
+/// cd builtin - change directory
+/// Supports: cd, cd -, cd ~, cd ~user, cd /path
+fn builtin_cd(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
+
+    // Get target directory
+    let target = if args.is_empty() {
+        // cd with no args goes to $HOME
+        home.clone()
+    } else {
+        let arg = &args[0];
+        if arg == "-" {
+            // cd - goes to $OLDPWD
+            match context.get_var("OLDPWD") {
+                Some(oldpwd) => {
+                    println!("{}", oldpwd);
+                    oldpwd.to_string()
+                }
+                None => {
+                    eprintln!("cd: OLDPWD not set");
+                    return error_result();
+                }
+            }
+        } else if arg == "~" || arg.is_empty() {
+            // cd ~ goes to $HOME
+            home.clone()
+        } else if arg.starts_with("~/") {
+            // cd ~/path goes to $HOME/path
+            format!("{}/{}", home, &arg[2..])
+        } else if arg.starts_with('~') {
+            // cd ~user - lookup user's home directory
+            let (username, suffix) = if let Some(slash_pos) = arg.find('/') {
+                (&arg[1..slash_pos], &arg[slash_pos..])
+            } else {
+                (&arg[1..], "")
+            };
+
+            #[cfg(unix)]
+            {
+                use nix::unistd::User;
+                match User::from_name(username) {
+                    Ok(Some(user)) => {
+                        let home = user.dir.to_string_lossy();
+                        if suffix.is_empty() {
+                            home.to_string()
+                        } else {
+                            format!("{}{}", home, suffix)
+                        }
+                    }
+                    Ok(None) => {
+                        eprintln!("cd: ~{}: No such user", username);
+                        return error_result();
+                    }
+                    Err(e) => {
+                        eprintln!("cd: ~{}: {}", username, e);
+                        return error_result();
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix platforms, just treat as literal path
+                arg.clone()
+            }
+        } else {
+            arg.clone()
+        }
+    };
+
+    // Save current directory as OLDPWD before changing
+    if let Ok(cwd) = env::current_dir() {
+        let _ = context.set_var("OLDPWD", cwd.to_string_lossy().to_string());
+    }
+
+    // Change directory
+    match env::set_current_dir(&target) {
+        Ok(_) => {
+            // Update PWD
+            if let Ok(new_cwd) = env::current_dir() {
+                let _ = context.set_var("PWD", new_cwd.to_string_lossy().to_string());
+            }
+            success_result()
+        }
+        Err(e) => {
+            eprintln!("cd: {}: {}", target, e);
+            error_result()
+        }
+    }
+}
+
+/// pushd builtin - push directory onto stack and cd to it
+fn builtin_pushd(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // Get current directory first
+    let cwd = match env::current_dir() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(e) => {
+            eprintln!("pushd: error getting current directory: {}", e);
+            return error_result();
+        }
+    };
+
+    if args.is_empty() {
+        // pushd with no args swaps top two directories
+        if context.dir_stack.is_empty() {
+            eprintln!("pushd: no other directory");
+            return error_result();
+        }
+
+        let top = context.dir_stack.remove(0);
+        context.dir_stack.insert(0, cwd.clone());
+
+        // Change to the popped directory
+        if let Err(e) = env::set_current_dir(&top) {
+            // Restore stack on failure
+            context.dir_stack.remove(0);
+            context.dir_stack.insert(0, top);
+            eprintln!("pushd: {}", e);
+            return error_result();
+        }
+
+        // Update OLDPWD and PWD
+        let _ = context.set_var("OLDPWD", cwd);
+        let _ = context.set_var("PWD", top.clone());
+
+        // Print the stack
+        print_dir_stack(context);
+        success_result()
+    } else {
+        let target = &args[0];
+
+        // Expand ~ in target
+        let expanded = if target == "~" {
+            env::var("HOME").unwrap_or_else(|_| "/".to_string())
+        } else if target.starts_with("~/") {
+            let home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            format!("{}/{}", home, &target[2..])
+        } else {
+            target.clone()
+        };
+
+        // Push current directory onto stack
+        context.dir_stack.insert(0, cwd.clone());
+
+        // Change to new directory
+        if let Err(e) = env::set_current_dir(&expanded) {
+            // Remove the directory we just pushed on failure
+            context.dir_stack.remove(0);
+            eprintln!("pushd: {}: {}", expanded, e);
+            return error_result();
+        }
+
+        // Update OLDPWD and PWD
+        let _ = context.set_var("OLDPWD", cwd);
+        if let Ok(new_cwd) = env::current_dir() {
+            let _ = context.set_var("PWD", new_cwd.to_string_lossy().to_string());
+        }
+
+        // Print the stack
+        print_dir_stack(context);
+        success_result()
+    }
+}
+
+/// popd builtin - pop directory from stack and cd to it
+fn builtin_popd(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // Check for -n flag (don't change directory, just manipulate stack)
+    let no_cd = args.iter().any(|a| a == "-n");
+
+    if context.dir_stack.is_empty() {
+        eprintln!("popd: directory stack empty");
+        return error_result();
+    }
+
+    let dir = context.dir_stack.remove(0);
+
+    if !no_cd {
+        // Save current directory as OLDPWD
+        if let Ok(cwd) = env::current_dir() {
+            let _ = context.set_var("OLDPWD", cwd.to_string_lossy().to_string());
+        }
+
+        // Change to the popped directory
+        if let Err(e) = env::set_current_dir(&dir) {
+            // Re-add directory to stack on failure
+            context.dir_stack.insert(0, dir);
+            eprintln!("popd: {}", e);
+            return error_result();
+        }
+
+        // Update PWD
+        if let Ok(new_cwd) = env::current_dir() {
+            let _ = context.set_var("PWD", new_cwd.to_string_lossy().to_string());
+        }
+    }
+
+    // Print the stack
+    print_dir_stack(context);
+    success_result()
+}
+
+/// dirs builtin - display directory stack
+fn builtin_dirs(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let clear = args.iter().any(|a| a == "-c");
+    let print_index = args.iter().any(|a| a == "-v");
+    let one_per_line = args.iter().any(|a| a == "-p");
+
+    if clear {
+        context.dir_stack.clear();
+        return success_result();
+    }
+
+    // Get current directory
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+
+    if print_index {
+        // Print with indices
+        println!(" 0  {}", cwd);
+        for (i, dir) in context.dir_stack.iter().enumerate() {
+            println!(" {}  {}", i + 1, dir);
+        }
+    } else if one_per_line {
+        // One directory per line
+        println!("{}", cwd);
+        for dir in &context.dir_stack {
+            println!("{}", dir);
+        }
+    } else {
+        // Default: space-separated on one line
+        print_dir_stack(context);
+    }
+
+    success_result()
+}
+
+/// Helper to print the directory stack
+fn print_dir_stack(context: &rush_expand::Context) {
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+
+    let mut parts = vec![cwd];
+    parts.extend(context.dir_stack.iter().cloned());
+    println!("{}", parts.join(" "));
+}
+
+/// echo builtin - display a line of text
+///
+/// Uses direct writes to stdout for reliable capture in command substitution
+fn builtin_echo(args: &[String]) -> ExecutionResult {
+    use std::io::Write;
+
+    let mut newline = true;
+    let mut interpret_escapes = false;
+    let mut args_iter = args.iter().peekable();
+
+    // Parse options (bash-style: only at the start, stop at first non-option)
+    while let Some(arg) = args_iter.peek() {
+        if arg.starts_with('-') && arg.len() > 1 && arg.chars().skip(1).all(|c| matches!(c, 'n' | 'e' | 'E')) {
+            let arg = args_iter.next().unwrap();
+            for c in arg.chars().skip(1) {
+                match c {
+                    'n' => newline = false,
+                    'e' => interpret_escapes = true,
+                    'E' => interpret_escapes = false,
+                    _ => {}
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    let remaining: Vec<&String> = args_iter.collect();
+    let text = remaining.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+
+    // Get stdout handle and lock it for the duration of the write
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+
+    if interpret_escapes {
+        let mut output = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('n') => output.push('\n'),
+                    Some('t') => output.push('\t'),
+                    Some('r') => output.push('\r'),
+                    Some('\\') => output.push('\\'),
+                    Some('a') => output.push('\x07'),
+                    Some('b') => output.push('\x08'),
+                    Some('f') => output.push('\x0C'),
+                    Some('v') => output.push('\x0B'),
+                    Some('0') => {
+                        // Octal escape
+                        let mut oct = String::new();
+                        for _ in 0..3 {
+                            if let Some(&ch) = chars.peek() {
+                                if ch >= '0' && ch <= '7' {
+                                    oct.push(chars.next().unwrap());
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        let val = u8::from_str_radix(&oct, 8).unwrap_or(0);
+                        output.push(val as char);
+                    }
+                    Some('x') => {
+                        // Hex escape
+                        let mut hex = String::new();
+                        for _ in 0..2 {
+                            if let Some(&ch) = chars.peek() {
+                                if ch.is_ascii_hexdigit() {
+                                    hex.push(chars.next().unwrap());
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        if !hex.is_empty() {
+                            let val = u8::from_str_radix(&hex, 16).unwrap_or(0);
+                            output.push(val as char);
+                        } else {
+                            output.push_str("\\x");
+                        }
+                    }
+                    Some('c') => {
+                        // Stop output (no newline either)
+                        let _ = handle.write_all(output.as_bytes());
+                        let _ = handle.flush();
+                        return success_result();
+                    }
+                    Some(other) => {
+                        output.push('\\');
+                        output.push(other);
+                    }
+                    None => output.push('\\'),
+                }
+            } else {
+                output.push(c);
+            }
+        }
+        let _ = handle.write_all(output.as_bytes());
+    } else {
+        let _ = handle.write_all(text.as_bytes());
+    }
+
+    if newline {
+        let _ = handle.write_all(b"\n");
+    }
+
+    let _ = handle.flush();
+    success_result()
+}
+
 /// printf builtin - formatted output
 fn builtin_printf(args: &[String], _context: &mut rush_expand::Context) -> ExecutionResult {
     if args.is_empty() {
@@ -2681,7 +3035,7 @@ fn builtin_disown(args: &[String], context: &mut rush_expand::Context) -> Execut
 }
 
 /// Helper to execute a parsed statement
-fn execute_statement(
+pub fn execute_statement(
     statement: &rush_parser::Statement,
     context: &mut rush_expand::Context,
 ) -> Result<ExecutionResult, String> {
@@ -2703,6 +3057,234 @@ fn execute_statement(
             Ok(last_result)
         }
     }
+}
+
+/// `complete` builtin - Define command-specific completions
+///
+/// Usage:
+///   complete -c COMMAND [-a COMPLETIONS] [-d DESC] [-s SHORT] [-l LONG] [-f] [-n COND]
+///   complete -c COMMAND -e    # Erase completions
+///   complete -p               # Print all completions
+///   complete -c COMMAND -p    # Print completions for COMMAND
+///
+/// Options:
+///   -c COMMAND    The command to add completions for
+///   -a ARGS       Completions to add (space-separated, or command in parentheses)
+///   -d DESC       Description for the completion
+///   -s SHORT      Short option (e.g., -v)
+///   -l LONG       Long option (e.g., --verbose)
+///   -f            Disable file completion for this command
+///   -n COND       Condition for when this completion applies
+///   -e            Erase all completions for the command
+///   -p            Print completions
+fn builtin_complete(args: &[String], _context: &rush_expand::Context) -> ExecutionResult {
+    use rush_interactive::{
+        add_completion, remove_completions, with_registry,
+        CompletionSource, CompletionSpec,
+    };
+
+    let mut command: Option<String> = None;
+    let mut completions: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut short_opt: Option<char> = None;
+    let mut long_opt: Option<String> = None;
+    let mut no_files = false;
+    let mut condition: Option<String> = None;
+    let mut erase = false;
+    let mut print = false;
+
+    // Parse arguments
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            "-c" => {
+                i += 1;
+                if i < args.len() {
+                    command = Some(args[i].clone());
+                } else {
+                    eprintln!("complete: -c requires an argument");
+                    return error_result();
+                }
+            }
+            "-a" => {
+                i += 1;
+                if i < args.len() {
+                    completions = Some(args[i].clone());
+                } else {
+                    eprintln!("complete: -a requires an argument");
+                    return error_result();
+                }
+            }
+            "-d" => {
+                i += 1;
+                if i < args.len() {
+                    description = Some(args[i].clone());
+                } else {
+                    eprintln!("complete: -d requires an argument");
+                    return error_result();
+                }
+            }
+            "-s" => {
+                i += 1;
+                if i < args.len() {
+                    short_opt = args[i].chars().next();
+                } else {
+                    eprintln!("complete: -s requires an argument");
+                    return error_result();
+                }
+            }
+            "-l" => {
+                i += 1;
+                if i < args.len() {
+                    long_opt = Some(args[i].clone());
+                } else {
+                    eprintln!("complete: -l requires an argument");
+                    return error_result();
+                }
+            }
+            "-n" => {
+                i += 1;
+                if i < args.len() {
+                    condition = Some(args[i].clone());
+                } else {
+                    eprintln!("complete: -n requires an argument");
+                    return error_result();
+                }
+            }
+            "-f" => no_files = true,
+            "-e" => erase = true,
+            "-p" => print = true,
+            _ => {
+                eprintln!("complete: unknown option: {}", arg);
+                return error_result();
+            }
+        }
+        i += 1;
+    }
+
+    // Handle print mode
+    if print {
+        with_registry(|registry| {
+            if let Some(cmd) = &command {
+                // Print completions for specific command
+                if let Some(specs) = registry.get(cmd) {
+                    for spec in specs {
+                        print_completion_spec(spec);
+                    }
+                }
+            } else {
+                // Print all completions
+                for (cmd, specs) in registry.all_specs() {
+                    println!("# Completions for '{}'", cmd);
+                    for spec in specs {
+                        print_completion_spec(spec);
+                    }
+                }
+            }
+        });
+        return success_result();
+    }
+
+    // Handle erase mode
+    if erase {
+        if let Some(cmd) = command {
+            remove_completions(&cmd);
+            return success_result();
+        } else {
+            eprintln!("complete: -e requires -c COMMAND");
+            return error_result();
+        }
+    }
+
+    // Adding a completion requires a command
+    let cmd = match command {
+        Some(c) => c,
+        None => {
+            eprintln!("complete: -c COMMAND is required");
+            return error_result();
+        }
+    };
+
+    // Determine the completion source
+    let source = if let Some(comps) = completions {
+        // Check if it's a dynamic command (wrapped in parentheses)
+        if comps.starts_with('(') && comps.ends_with(')') {
+            CompletionSource::Dynamic(comps[1..comps.len()-1].to_string())
+        } else {
+            // Static list of completions (space-separated)
+            CompletionSource::Static(
+                comps.split_whitespace().map(String::from).collect()
+            )
+        }
+    } else if short_opt.is_some() || long_opt.is_some() {
+        CompletionSource::Option {
+            short: short_opt,
+            long: long_opt,
+        }
+    } else if no_files {
+        // Just marking no-files without adding completions
+        CompletionSource::Static(vec![])
+    } else {
+        eprintln!("complete: need -a, -s, -l, or -f");
+        return error_result();
+    };
+
+    // Create and register the completion spec
+    let spec = CompletionSpec {
+        command: cmd,
+        condition,
+        source,
+        description,
+        no_files,
+    };
+
+    add_completion(spec);
+    success_result()
+}
+
+fn print_completion_spec(spec: &rush_interactive::CompletionSpec) {
+    use rush_interactive::CompletionSource;
+
+    let mut parts = vec![format!("complete -c {}", spec.command)];
+
+    if let Some(ref cond) = spec.condition {
+        parts.push(format!("-n \"{}\"", cond));
+    }
+
+    match &spec.source {
+        CompletionSource::Static(items) if !items.is_empty() => {
+            parts.push(format!("-a \"{}\"", items.join(" ")));
+        }
+        CompletionSource::Dynamic(cmd) => {
+            parts.push(format!("-a \"({})\"", cmd));
+        }
+        CompletionSource::ShortOption(c) => {
+            parts.push(format!("-s {}", c));
+        }
+        CompletionSource::LongOption(s) => {
+            parts.push(format!("-l {}", s));
+        }
+        CompletionSource::Option { short, long } => {
+            if let Some(c) = short {
+                parts.push(format!("-s {}", c));
+            }
+            if let Some(l) = long {
+                parts.push(format!("-l {}", l));
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(ref desc) = spec.description {
+        parts.push(format!("-d \"{}\"", desc));
+    }
+
+    if spec.no_files {
+        parts.push("-f".to_string());
+    }
+
+    println!("{}", parts.join(" "));
 }
 
 #[cfg(test)]

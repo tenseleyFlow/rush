@@ -13,8 +13,11 @@ pub mod signals;
 pub mod terminal;
 
 pub use job::{Job, JobId, JobList, JobState};
-pub use signals::{check_children, setup_job_control_signals};
-pub use terminal::{give_terminal_to, restore_shell_terminal, setup_shell_terminal};
+pub use signals::{check_children, check_sighup, check_sigwinch, setup_job_control_signals};
+pub use terminal::{
+    give_terminal_to, get_terminal_attrs, restore_shell_terminal, restore_terminal_attrs,
+    save_terminal_attrs, set_terminal_attrs, setup_shell_terminal,
+};
 
 use thiserror::Error;
 

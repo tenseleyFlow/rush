@@ -241,6 +241,28 @@ impl JobList {
             self.remove_job(id);
         }
     }
+
+    /// Send SIGHUP to all running jobs
+    /// Called when the shell is exiting to notify background jobs
+    pub fn send_hup_to_all(&self) {
+        use nix::sys::signal::{killpg, Signal};
+
+        for job in self.jobs.values() {
+            if job.is_running() || job.is_stopped() {
+                // Send SIGHUP to the process group
+                let _ = killpg(job.pgid, Signal::SIGHUP);
+                // Also send SIGCONT in case the job was stopped
+                if job.is_stopped() {
+                    let _ = killpg(job.pgid, Signal::SIGCONT);
+                }
+            }
+        }
+    }
+
+    /// Check if there are any running or stopped jobs
+    pub fn has_active_jobs(&self) -> bool {
+        self.jobs.values().any(|job| job.is_running() || job.is_stopped())
+    }
 }
 
 #[cfg(test)]
