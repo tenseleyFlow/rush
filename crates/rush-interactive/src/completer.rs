@@ -25,8 +25,15 @@ impl RushCompleter {
                 if let Ok(entries) = fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         if let Ok(file_type) = entry.file_type() {
-                            if file_type.is_file() {
-                                if let Ok(metadata) = entry.metadata() {
+                            // Include both regular files and symlinks (many executables are symlinks)
+                            if file_type.is_file() || file_type.is_symlink() {
+                                // Use fs::metadata(path) which follows symlinks, NOT entry.metadata()
+                                // entry.metadata() does NOT follow symlinks (like lstat)
+                                if let Ok(metadata) = fs::metadata(entry.path()) {
+                                    // Only include if target is a file (not a directory symlink)
+                                    if !metadata.is_file() {
+                                        continue;
+                                    }
                                     #[cfg(unix)]
                                     {
                                         use std::os::unix::fs::PermissionsExt;
@@ -51,15 +58,16 @@ impl RushCompleter {
         }
 
         // Add built-in commands
-        commands.extend_from_slice(&[
-            "cd".to_string(),
-            "pwd".to_string(),
-            "exit".to_string(),
-            "jobs".to_string(),
-            "fg".to_string(),
-            "bg".to_string(),
-            "test".to_string(),
-        ]);
+        let builtins = [
+            "cd", "pwd", "exit", "true", "false", "test", "[",
+            "eval", "alias", "unalias", "trap", "set", "shopt",
+            "export", "unset", "readonly", "declare", "typeset", "local",
+            "read", "shift", "wait", "kill", "times", "umask", "hash",
+            "getopts", "exec", "command", "jobs", "fg", "bg",
+            "coproc", "disown", "printf", "mapfile", "readarray",
+            "break", "continue", "return", "source", ".",
+        ];
+        commands.extend(builtins.iter().map(|s| s.to_string()));
 
         // Sort and deduplicate
         commands.sort();
@@ -72,7 +80,14 @@ impl RushCompleter {
         let mut completions = Vec::new();
 
         // Determine the directory to search and the prefix to match
-        let (search_dir, prefix) = if partial.contains('/') {
+        let (search_dir, prefix) = if partial.is_empty() {
+            // Empty partial - list current directory
+            (PathBuf::from("."), String::new())
+        } else if partial.ends_with('/') {
+            // Path ends with / - list contents of that directory
+            (PathBuf::from(partial), String::new())
+        } else if partial.contains('/') {
+            // Path contains / but doesn't end with it - split into dir and partial filename
             let path = PathBuf::from(partial);
             let parent = path.parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
@@ -83,16 +98,32 @@ impl RushCompleter {
                 .to_string();
             (parent, file_name)
         } else {
+            // No / - search current directory
             (PathBuf::from("."), partial.to_string())
         };
+
+        // Should we show hidden files? Only if partial starts with '.'
+        let show_hidden = prefix.starts_with('.');
 
         // Read directory and find matches
         if let Ok(entries) = fs::read_dir(&search_dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
+                    // Skip hidden files unless explicitly requested
+                    if name.starts_with('.') && !show_hidden {
+                        continue;
+                    }
+
                     if name.starts_with(&prefix) {
-                        // Build the full completion
-                        let mut completion = if partial.contains('/') {
+                        // Build the full completion path
+                        let mut completion = if partial.is_empty() {
+                            // Empty partial - just the name
+                            name.to_string()
+                        } else if partial.ends_with('/') {
+                            // partial is "dir/" - completion is "dir/name"
+                            format!("{}{}", partial, name)
+                        } else if partial.contains('/') {
+                            // partial is "dir/partial" - completion is "dir/name"
                             let parent_path = PathBuf::from(partial);
                             let parent = parent_path
                                 .parent()
@@ -101,6 +132,7 @@ impl RushCompleter {
                                 .to_string_lossy()
                                 .to_string()
                         } else {
+                            // partial is just "name" - completion is "name"
                             name.to_string()
                         };
 
@@ -146,16 +178,14 @@ impl Completer for RushCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let (start, partial) = Self::get_partial_word(line, pos);
 
-        // Skip empty completions
-        if partial.is_empty() {
-            return vec![];
-        }
-
         let span = Span::new(start, pos);
         let mut suggestions = Vec::new();
 
         if Self::is_first_word(line, pos) {
-            // Complete command names
+            // Complete command names - skip if nothing typed yet
+            if partial.is_empty() {
+                return vec![];
+            }
             for cmd in Self::get_commands_from_path() {
                 if cmd.starts_with(partial) {
                     suggestions.push(Suggestion {
@@ -170,6 +200,7 @@ impl Completer for RushCompleter {
             }
         } else {
             // Complete file/directory names
+            // When partial is empty (e.g., "ls "), show all non-hidden files
             for file in Self::get_file_completions(partial) {
                 suggestions.push(Suggestion {
                     value: file.clone(),

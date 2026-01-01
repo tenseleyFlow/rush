@@ -1,9 +1,9 @@
 use reedline::{
-    ColumnarMenu, DefaultHinter, DefaultPrompt, Emacs, FileBackedHistory,
+    ColumnarMenu, DefaultPrompt, Emacs, FileBackedHistory,
     KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
     default_emacs_keybindings,
 };
-use rush_interactive::{RushCompleter, RushHighlighter};
+use rush_interactive::{RushCompleter, RushHighlighter, RushHinter};
 use std::process::ExitCode;
 
 pub fn run_interactive() -> ExitCode {
@@ -19,10 +19,11 @@ pub fn run_interactive() -> ExitCode {
             FileBackedHistory::with_file(1000, path).ok()
         });
 
-    // Create the completion menu
+    // Create the completion menu with custom marker (instead of default "|")
     let completion_menu = Box::new(
         ColumnarMenu::default()
             .with_name("completion_menu")
+            .with_marker("› ")
     );
 
     // Set up keybindings with Tab completion and arrow key navigation
@@ -75,31 +76,24 @@ pub fn run_interactive() -> ExitCode {
         KeyCode::Right,
         ReedlineEvent::UntilFound(vec![
             ReedlineEvent::MenuRight,
+            ReedlineEvent::HistoryHintComplete,  // Accept hint if at end of line
             ReedlineEvent::Right,
         ]),
     );
 
-    // Enter selects completion or executes command
+    // Enter executes command
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Enter,
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::HistoryHintComplete,
-            ReedlineEvent::Submit,
-        ]),
+        ReedlineEvent::Submit,
     );
 
     let mut line_editor = Reedline::create()
         .with_highlighter(Box::new(RushHighlighter::new()))
-        .with_hinter(Box::new(
-            DefaultHinter::default()
-                .with_style(nu_ansi_term::Style::new().fg(nu_ansi_term::Color::DarkGray))
-        ))
+        .with_hinter(Box::new(RushHinter::new()))
         .with_completer(Box::new(RushCompleter::new()))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
-        .with_edit_mode(Box::new(Emacs::new(keybindings)))
-        .with_quick_completions(true)   // Auto-complete when single match
-        .with_partial_completions(true); // Complete common prefix for multiple matches
+        .with_edit_mode(Box::new(Emacs::new(keybindings)));
 
     // Add history if we successfully created it
     if let Some(history) = history_file {
