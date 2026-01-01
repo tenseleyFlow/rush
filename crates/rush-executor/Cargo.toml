@@ -14,3 +14,4 @@ rush-interactive = { path = "../rush-interactive" }
 nix = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+globset = { workspace = true }

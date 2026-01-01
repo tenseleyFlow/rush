@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::ast::{
     AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CommandType, CompleteCommand,
-    ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, Redirect, SimpleCommand,
-    Statement, VarExpansion, WhileStatement, Word, WordPart,
+    ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, PipelineElement, Redirect,
+    SimpleCommand, Statement, Subshell, VarExpansion, WhileStatement, Word, WordPart,
 };
 
 #[derive(Parser)]
@@ -121,11 +121,13 @@ fn parse_and_or_list_type(pair: pest::iterators::Pair<Rule>) -> Result<CommandTy
     // If there's only one pipeline with no operators, return it directly
     if pipelines.len() == 1 && operators.is_empty() {
         let pipeline = pipelines.into_iter().next().unwrap();
-        // If it's a single-command pipeline, return as Simple
+        // If it's a single-element pipeline, unwrap it
         if pipeline.commands.len() == 1 {
-            return Ok(CommandType::Simple(
-                pipeline.commands.into_iter().next().unwrap()
-            ));
+            let element = pipeline.commands.into_iter().next().unwrap();
+            return Ok(match element {
+                PipelineElement::Simple(cmd) => CommandType::Simple(cmd),
+                PipelineElement::Subshell(subshell) => CommandType::Subshell(subshell),
+            });
         } else {
             return Ok(CommandType::Pipeline(pipeline));
         }
@@ -143,18 +145,33 @@ fn parse_and_or_list_type(pair: pest::iterators::Pair<Rule>) -> Result<CommandTy
 }
 
 fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Pipeline, ParseError> {
-    let mut commands = Vec::new();
+    let mut elements = Vec::new();
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
-            Rule::simple_command => {
-                commands.push(parse_simple_command(inner_pair)?);
+            Rule::pipeline_element => {
+                elements.push(parse_pipeline_element(inner_pair)?);
             }
             _ => return Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
         }
     }
 
-    Ok(Pipeline::new(commands))
+    Ok(Pipeline::new(elements))
+}
+
+fn parse_pipeline_element(pair: pest::iterators::Pair<Rule>) -> Result<PipelineElement, ParseError> {
+    let inner_pair = pair.into_inner().next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::pipeline_element))?;
+
+    match inner_pair.as_rule() {
+        Rule::simple_command => {
+            Ok(PipelineElement::Simple(parse_simple_command(inner_pair)?))
+        }
+        Rule::subshell => {
+            Ok(PipelineElement::Subshell(parse_subshell(inner_pair)?))
+        }
+        _ => Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
+    }
 }
 
 fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleCommand, ParseError> {
@@ -231,6 +248,40 @@ fn parse_word(pair: pest::iterators::Pair<Rule>) -> Result<Word, ParseError> {
     Ok(Word::new(parts))
 }
 
+/// Recursively reconstruct command substitution content from parse tree
+/// Handles nested parentheses: $(echo $(echo inner))
+fn reconstruct_command_subst_content(pair: pest::iterators::Pair<Rule>) -> String {
+    match pair.as_rule() {
+        Rule::command_subst_content => {
+            // Recursively reconstruct all parts
+            pair.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>()
+        }
+        Rule::command_subst_part => {
+            // A part is either nested parens or text
+            pair.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>()
+        }
+        Rule::nested_parens => {
+            // Add the parentheses back
+            let content = pair.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>();
+            format!("({})", content)
+        }
+        Rule::command_subst_text => {
+            // Just return the text as-is
+            pair.as_str().to_string()
+        }
+        _ => {
+            // For any other rule, just return the text
+            pair.as_str().to_string()
+        }
+    }
+}
+
 fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, ParseError> {
     let inner = pair.into_inner().next().ok_or_else(|| {
         ParseError::UnexpectedRule(Rule::word_part)
@@ -251,10 +302,10 @@ fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, P
             Ok(vec![WordPart::ArithmeticExpansion(content)])
         }
         Rule::command_substitution => {
-            let content = inner.into_inner().next()
-                .ok_or_else(|| ParseError::UnexpectedRule(Rule::command_substitution))?
-                .as_str()
-                .to_string();
+            // Reconstruct the content from the parsed parts (handles nested parens)
+            let content = inner.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>();
             Ok(vec![WordPart::CommandSubstitution(content)])
         }
         Rule::quoted_string => {
@@ -364,6 +415,12 @@ fn parse_var_expansion(pair: pest::iterators::Pair<Rule>) -> Result<VarExpansion
             } else {
                 Ok(VarExpansion::Simple(var_name))
             }
+        }
+        Rule::special_var => {
+            // Special variables: $?, $#, $@, $*, $0, $1, etc.
+            // These are always treated as simple expansions
+            let var_name = first.as_str().to_string();
+            Ok(VarExpansion::Simple(var_name))
         }
         _ => Err(ParseError::UnexpectedRule(first.as_rule())),
     }
@@ -544,10 +601,10 @@ fn parse_double_quoted_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Wor
             Ok(vec![WordPart::ArithmeticExpansion(content)])
         }
         Rule::command_substitution => {
-            let content = inner.into_inner().next()
-                .ok_or_else(|| ParseError::UnexpectedRule(Rule::command_substitution))?
-                .as_str()
-                .to_string();
+            // Reconstruct the content from the parsed parts (handles nested parens)
+            let content = inner.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>();
             Ok(vec![WordPart::CommandSubstitution(content)])
         }
         _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
@@ -873,6 +930,22 @@ fn parse_function_definition(pair: pest::iterators::Pair<Rule>) -> Result<Functi
         name.ok_or_else(|| ParseError::UnexpectedRule(Rule::function_definition))?,
         body,
     ))
+}
+
+fn parse_subshell(pair: pest::iterators::Pair<Rule>) -> Result<Subshell, ParseError> {
+    let mut commands = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::command_list => {
+                commands = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(Subshell::new(commands))
 }
 
 fn parse_command_list(pair: pest::iterators::Pair<Rule>) -> Result<Vec<CompleteCommand>, ParseError> {

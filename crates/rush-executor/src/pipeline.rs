@@ -7,6 +7,9 @@ use rush_parser::ast::{AndOrList, AndOrOp, Pipeline, SimpleCommand};
 use std::process::{Command, Stdio};
 use thiserror::Error;
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+
 #[derive(Error, Debug)]
 pub enum PipelineError {
     #[error("Execution error: {0}")]
@@ -23,6 +26,16 @@ pub enum PipelineError {
 
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    // Control flow signals (not really errors)
+    #[error("break")]
+    Break,
+
+    #[error("continue")]
+    Continue,
+
+    #[error("return")]
+    Return(i32),
 }
 
 /// Execute a pipeline of commands
@@ -39,77 +52,164 @@ pub fn execute_pipeline(
 
     // Special case: single command (not really a pipeline)
     if pipeline.commands.len() == 1 {
-        return execute_simple_with_redirects(&pipeline.commands[0], context, false)
-            .map_err(PipelineError::from);
+        match &pipeline.commands[0] {
+            rush_parser::ast::PipelineElement::Simple(cmd) => {
+                return execute_simple_with_redirects(cmd, context, false)
+                    .map_err(PipelineError::from);
+            }
+            rush_parser::ast::PipelineElement::Subshell(subshell) => {
+                return crate::execute_subshell(subshell, context)
+                    .map_err(|e| PipelineError::ExecutionError(ExecutionError::CommandNotFound(e)));
+            }
+        }
     }
 
     // Build and spawn all commands in the pipeline
     let mut children = Vec::new();
+    let mut subshell_pids = Vec::new(); // Track subshell PIDs separately
     let mut prev_stdout = None;
 
-    for (i, simple_cmd) in pipeline.commands.iter().enumerate() {
+    for (i, element) in pipeline.commands.iter().enumerate() {
         let is_first = i == 0;
         let is_last = i == pipeline.commands.len() - 1;
 
-        // Expand words
-        let expanded = rush_expand::expand_words(&simple_cmd.words, context)
-            .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
+        match element {
+            rush_parser::ast::PipelineElement::Simple(simple_cmd) => {
+                // Expand words
+                let expanded = rush_expand::expand_words(&simple_cmd.words, context)
+                    .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
 
-        if expanded.is_empty() {
-            continue; // Skip empty commands
+                if expanded.is_empty() {
+                    continue; // Skip empty commands
+                }
+
+                let command_name = &expanded[0];
+                let args = &expanded[1..];
+
+                // Find the command in PATH
+                let program_path = find_in_path(command_name)
+                    .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
+
+                // Build the command
+                let mut cmd = Command::new(program_path);
+                cmd.args(args);
+
+                // Set up stdin
+                if is_first {
+                    cmd.stdin(Stdio::inherit());
+                } else if let Some(prev_out) = prev_stdout.take() {
+                    cmd.stdin(prev_out);
+                }
+
+                // Set up stdout
+                if is_last {
+                    cmd.stdout(Stdio::inherit());
+                } else {
+                    cmd.stdout(Stdio::piped());
+                }
+
+                cmd.stderr(Stdio::inherit());
+                apply_redirects(&mut cmd, &simple_cmd.redirects, context)?;
+
+                let mut child = cmd.spawn()?;
+                if !is_last {
+                    prev_stdout = child.stdout.take().map(Stdio::from);
+                }
+                children.push(child);
+            }
+            rush_parser::ast::PipelineElement::Subshell(subshell) => {
+                // Execute subshell in pipeline using fork
+                #[cfg(unix)]
+                {
+                    use nix::unistd::{fork, ForkResult, pipe as nix_pipe, dup2};
+                    use std::os::unix::io::{IntoRawFd, FromRawFd};
+
+                    // Create pipe for stdout if not last
+                    let pipe_fds = if !is_last {
+                        let (r, w) = nix_pipe().map_err(|e| ExecutionError::IoError(
+                            std::io::Error::new(std::io::ErrorKind::Other, format!("pipe failed: {}", e))
+                        ))?;
+                        Some((r.into_raw_fd(), w.into_raw_fd()))
+                    } else {
+                        None
+                    };
+
+                    match unsafe { fork() } {
+                        Ok(ForkResult::Child) => {
+                            // Child process: execute subshell with redirected I/O
+                            use nix::libc;
+
+                            // Set up stdin from previous command if we have one
+                            if let Some(prev) = prev_stdout {
+                                // prev is Stdio, we need to extract the file descriptor
+                                // This is tricky - Stdio doesn't expose the raw FD easily
+                                // We'll skip stdin redirection for now in subshells
+                                // TODO: Properly handle stdin from previous pipeline element
+                            }
+
+                            // Set up stdout to pipe if not last
+                            if let Some((read_fd, write_fd)) = pipe_fds {
+                                unsafe { libc::close(read_fd); } // Close read end in child
+                                let _ = dup2(write_fd, 1);
+                                unsafe { libc::close(write_fd); }
+                            }
+
+                            // Execute subshell commands
+                            let exit_code = crate::subshell::execute_subshell_child(&subshell.commands, context);
+                            std::process::exit(exit_code);
+                        }
+                        Ok(ForkResult::Parent { child }) => {
+                            // Parent process: save pipe and track child PID
+                            use nix::libc;
+                            if let Some((read_fd, write_fd)) = pipe_fds {
+                                unsafe { libc::close(write_fd); }
+                                prev_stdout = Some(Stdio::from(unsafe { std::fs::File::from_raw_fd(read_fd) }));
+                            }
+
+                            // Track the subshell PID for later waiting
+                            subshell_pids.push(child);
+                        }
+                        Err(e) => {
+                            return Err(PipelineError::ExecutionError(ExecutionError::IoError(
+                                std::io::Error::new(std::io::ErrorKind::Other, format!("fork failed: {}", e))
+                            )));
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                        "Subshells in pipelines not supported on this platform".to_string()
+                    )));
+                }
+            }
         }
-
-        let command_name = &expanded[0];
-        let args = &expanded[1..];
-
-        // Find the command in PATH
-        let program_path = find_in_path(command_name)
-            .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(command_name)))?;
-
-        // Build the command
-        let mut cmd = Command::new(program_path);
-        cmd.args(args);
-
-        // Set up stdin
-        if is_first {
-            // First command: use default stdin (unless redirected)
-            cmd.stdin(Stdio::inherit());
-        } else if let Some(prev_out) = prev_stdout.take() {
-            // Middle/last commands: use previous command's stdout
-            cmd.stdin(prev_out);
-        }
-
-        // Set up stdout
-        if is_last {
-            // Last command: use default stdout (unless redirected)
-            cmd.stdout(Stdio::inherit());
-        } else {
-            // First/middle commands: create a pipe for next command
-            cmd.stdout(Stdio::piped());
-        }
-
-        // stderr inherits from parent by default
-        cmd.stderr(Stdio::inherit());
-
-        // Apply redirections (can override stdin/stdout/stderr)
-        apply_redirects(&mut cmd, &simple_cmd.redirects, context)?;
-
-        // Spawn the command
-        let mut child = cmd.spawn()?;
-
-        // Save stdout for next command
-        if !is_last {
-            prev_stdout = child.stdout.take().map(Stdio::from);
-        }
-
-        children.push(child);
     }
 
     // Wait for all commands to complete
     let mut last_exit_status = None;
+
+    // Wait for regular process children
     for child in &mut children {
         let status = child.wait()?;
         last_exit_status = Some(status);
+    }
+
+    // Wait for subshell PIDs
+    #[cfg(unix)]
+    {
+        use nix::sys::wait::{waitpid, WaitStatus};
+        for pid in subshell_pids {
+            match waitpid(pid, None) {
+                Ok(WaitStatus::Exited(_, code)) => {
+                    last_exit_status = Some(crate::command::exit_code_to_result(code).exit_status);
+                }
+                Ok(WaitStatus::Signaled(_, signal, _)) => {
+                    last_exit_status = Some(crate::command::exit_code_to_result(128 + signal as i32).exit_status);
+                }
+                _ => {}
+            }
+        }
     }
 
     // Return the exit status of the last command
@@ -156,7 +256,7 @@ pub fn execute_simple_with_redirects(
     cmd: &SimpleCommand,
     context: &mut Context,
     interactive: bool,
-) -> Result<ExecutionResult, ExecutionError> {
+) -> Result<ExecutionResult, PipelineError> {
     // Process variable assignments
     for assignment in &cmd.assignments {
         // Check if this is an array literal assignment: arr=(one two three)
@@ -171,10 +271,7 @@ pub fn execute_simple_with_redirects(
                     let mut array_values = Vec::new();
                     for elem in elements {
                         let expanded = rush_expand::expand_word(elem, context)
-                            .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                e.to_string(),
-                            )))?;
+                            .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
                         array_values.push(expanded);
                     }
                     context.arrays.insert(assignment.name.clone(), array_values);
@@ -183,10 +280,7 @@ pub fn execute_simple_with_redirects(
         } else if let Some(index) = &assignment.index {
             // arr[index]=value - indexed array assignment
             let value = rush_expand::expand_words(&[assignment.value.clone()], context)
-                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )))?;
+                .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
             let idx = index.parse::<usize>().unwrap_or(0);
 
             // Get or create array
@@ -201,14 +295,11 @@ pub fn execute_simple_with_redirects(
         } else {
             // Regular variable assignment
             let value = rush_expand::expand_words(&[assignment.value.clone()], context)
-                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )))?;
+                .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
 
             // Check if readonly
             if let Err(name) = context.set_var(&assignment.name, value.join(" ")) {
-                return Err(ExecutionError::IoError(std::io::Error::new(
+                return Err(PipelineError::IoError(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     format!("{}: readonly variable", name),
                 )));
@@ -223,10 +314,7 @@ pub fn execute_simple_with_redirects(
 
     // Expand all words
     let expanded = rush_expand::expand_words(&cmd.words, context)
-        .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            e.to_string(),
-        )))?;
+        .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
 
     if expanded.is_empty() {
         return Ok(crate::command::success_result());
@@ -251,6 +339,19 @@ pub fn execute_simple_with_redirects(
         (command_name.to_string(), args.to_vec())
     };
 
+    // Handle control flow commands (must propagate as errors, not regular results)
+    match actual_command.as_str() {
+        "break" => return Err(PipelineError::Break),
+        "continue" => return Err(PipelineError::Continue),
+        "return" => {
+            let code = actual_args.first()
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(context.last_exit_status);
+            return Err(PipelineError::Return(code));
+        }
+        _ => {}
+    }
+
     // Check if it's a built-in command
     if let Some(result) = crate::command::execute_builtin(&actual_command, &actual_args, context) {
         return Ok(result);
@@ -258,54 +359,91 @@ pub fn execute_simple_with_redirects(
 
     // Check if it's a function
     if let Some(function_def) = context.functions.get(&actual_command).cloned() {
-        // TODO: Set up function parameters ($1, $2, etc.)
-        // TODO: Create function scope
-        // For now, just execute the function body
+        // Set up function parameters ($1, $2, etc.)
+        // Save current positional parameters
+        let saved_params = context.positional_params.clone();
+
+        // Set new positional parameters from function arguments
+        context.positional_params = actual_args.to_vec();
+
+        // Push a new local scope for this function
+        context.push_scope();
+
+        // Execute the function body
         let mut last_result = crate::command::success_result();
         for cmd in &function_def.body {
-            last_result = crate::control_flow::execute_complete_command(cmd, context)
-                .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )))?;
+            match crate::control_flow::execute_complete_command(cmd, context) {
+                Ok(result) => last_result = result,
+                Err(PipelineError::Return(code)) => {
+                    // Clean up: pop scope and restore positional parameters
+                    context.pop_scope();
+                    context.positional_params = saved_params;
+
+                    // Return from function with specified exit code
+                    #[cfg(unix)]
+                    {
+                        return Ok(crate::command::ExecutionResult {
+                            exit_status: std::process::ExitStatus::from_raw(code << 8),
+                            job_control: None,
+                        });
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        // On non-Unix, approximate the exit code
+                        if code == 0 {
+                            return Ok(crate::command::success_result());
+                        } else {
+                            return Ok(crate::command::ExecutionResult {
+                                exit_status: std::process::ExitStatus::default(),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Clean up: pop scope and restore positional parameters
+                    context.pop_scope();
+                    context.positional_params = saved_params;
+                    return Err(e);
+                }
+            }
         }
+
+        // Clean up: pop scope and restore positional parameters
+        context.pop_scope();
+        context.positional_params = saved_params;
+
         return Ok(last_result);
     }
 
     // Find the command in PATH
     let program_path = find_in_path(&actual_command)
-        .ok_or_else(|| ExecutionError::CommandNotFound(ErrorHints::command_not_found(&actual_command)))?;
+        .ok_or_else(|| PipelineError::ExecutionError(
+            ExecutionError::CommandNotFound(ErrorHints::command_not_found(&actual_command))
+        ))?;
 
     // Build the command
     let mut command = Command::new(program_path);
     command.args(&actual_args);
 
     // Apply redirections and get optional stdin content
-    let stdin_content = apply_redirects(&mut command, &cmd.redirects, context)
-        .map_err(|e| ExecutionError::IoError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            e.to_string(),
-        )))?;
+    let stdin_content = apply_redirects(&mut command, &cmd.redirects, context)?;
 
     // If we have stdin content (heredoc/herestring), handle it specially
     if let Some(content) = stdin_content {
         use std::io::Write;
 
         // Spawn the command
-        let mut child = command.spawn()
-            .map_err(|e| ExecutionError::IoError(e))?;
+        let mut child = command.spawn()?;
 
         // Write to stdin
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(content.as_bytes())
-                .map_err(|e| ExecutionError::IoError(e))?;
+            stdin.write_all(content.as_bytes())?;
             // Close stdin by dropping it
             drop(stdin);
         }
 
         // Wait for the command to complete
-        let status = child.wait()
-            .map_err(|e| ExecutionError::IoError(e))?;
+        let status = child.wait()?;
 
         Ok(crate::command::ExecutionResult {
             exit_status: status,
@@ -317,11 +455,13 @@ pub fn execute_simple_with_redirects(
         #[cfg(unix)]
         {
             crate::terminal::unix::execute_with_terminal_control(command, interactive)
+                .map_err(PipelineError::from)
         }
 
         #[cfg(not(unix))]
         {
             crate::terminal::non_unix::execute_with_terminal_control(command, interactive)
+                .map_err(PipelineError::from)
         }
     }
 }

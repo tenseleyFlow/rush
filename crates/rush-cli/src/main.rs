@@ -1,11 +1,24 @@
 use clap::Parser;
-use rush_expand::Context;
+use rush_expand::{Context, CommandExecutorWrapper};
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
+use std::rc::Rc;
 
 mod heredoc;
 mod repl;
+
+/// Create a new Context with internal command substitution enabled
+pub(crate) fn create_context() -> Context {
+    let mut context = Context::new();
+
+    // Set up internal command executor for command substitution
+    // This allows $(command) to execute using rush's own parser/executor
+    // instead of delegating to sh -c
+    context.command_executor = CommandExecutorWrapper(Some(Rc::new(rush_executor::execute_for_substitution)));
+
+    context
+}
 
 #[derive(Parser)]
 #[command(name = "rush")]
@@ -88,7 +101,7 @@ pub(crate) fn check_background_jobs(context: &mut Context) {
 
 /// Execute a command string
 fn execute_string(command: &str) -> ExitCode {
-    let mut context = Context::new();
+    let mut context = create_context();
     match execute_line(command, &mut context, false) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
@@ -108,7 +121,7 @@ fn execute_file(path: &str) -> ExitCode {
         }
     };
 
-    let mut context = Context::new();
+    let mut context = create_context();
 
     // Split into lines for heredoc support and multiline statements
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
@@ -223,7 +236,7 @@ fn execute_stdin() -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let mut context = Context::new();
+    let mut context = create_context();
     match execute_line(&content, &mut context, false) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
@@ -299,7 +312,7 @@ fn execute_complete_command(
 ) -> Result<i32, String> {
     use rush_executor::{
         execute_and_or_list, execute_case, execute_for, execute_if, execute_pipeline,
-        execute_simple_with_redirects, execute_while,
+        execute_simple_with_redirects, execute_subshell, execute_while,
     };
     use rush_parser::ast::CommandType;
 
@@ -348,6 +361,10 @@ fn execute_complete_command(
                 job_control: None,
             }
         }
+        CommandType::Subshell(subshell) => {
+            execute_subshell(subshell, context)
+                .map_err(|e| e.to_string())?
+        }
     };
 
     // Check if the job was stopped (Ctrl-Z)
@@ -377,7 +394,7 @@ fn execute_complete_command(
 
 /// Build a command string from AST for display purposes
 #[cfg(unix)]
-fn build_command_string(cmd: &rush_parser::ast::CommandType, context: &Context) -> String {
+fn build_command_string(cmd: &rush_parser::ast::CommandType, context: &mut Context) -> String {
     use rush_parser::ast::CommandType;
 
     match cmd {
@@ -392,15 +409,22 @@ fn build_command_string(cmd: &rush_parser::ast::CommandType, context: &Context) 
         }
         CommandType::Pipeline(pipeline) => {
             let parts: Vec<String> = pipeline.commands.iter()
-                .filter_map(|simple_cmd| {
-                    if let Ok(expanded) = rush_expand::expand_words(&simple_cmd.words, context) {
-                        if !expanded.is_empty() {
-                            Some(expanded.join(" "))
-                        } else {
-                            None
+                .filter_map(|elem| {
+                    match elem {
+                        rush_parser::ast::PipelineElement::Simple(simple_cmd) => {
+                            if let Ok(expanded) = rush_expand::expand_words(&simple_cmd.words, context) {
+                                if !expanded.is_empty() {
+                                    Some(expanded.join(" "))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
                         }
-                    } else {
-                        None
+                        rush_parser::ast::PipelineElement::Subshell(_) => {
+                            Some("(subshell)".to_string())
+                        }
                     }
                 })
                 .collect();
@@ -420,7 +444,7 @@ fn execute_background_command(
     cmd: &rush_parser::CompleteCommand,
     context: &mut Context,
 ) -> Result<i32, String> {
-    use rush_executor::{execute_pipeline_background, execute_simple_background};
+    use rush_executor::{execute_pipeline_background, execute_simple_background, execute_subshell_background};
     use rush_parser::ast::CommandType;
 
     match &cmd.command {
@@ -462,8 +486,27 @@ fn execute_background_command(
             // Background jobs return success immediately
             Ok(0)
         }
+        CommandType::Subshell(subshell) => {
+            // Execute subshell in background
+            let (pid, pgid, command_string) = execute_subshell_background(subshell, context)
+                .map_err(|e| e.to_string())?;
+
+            // Add to job list
+            let job_id = context.job_list.add_job(
+                pgid,
+                command_string.clone(),
+                vec![pid],
+                false, // not foreground
+            );
+
+            // Print job notification
+            println!("[{}] {}", job_id, pid);
+
+            // Background jobs return success immediately
+            Ok(0)
+        }
         _ => {
-            // Control flow commands in background not yet supported
+            // Other control flow commands in background not yet supported
             Err("Background execution of control flow commands not yet supported".to_string())
         }
     }

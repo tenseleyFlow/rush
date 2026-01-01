@@ -28,7 +28,7 @@ crossterm = "0.28"
 nu-ansi-term = "0.50"
 
 # System calls (Unix)
-nix = { version = "0.29", features = ["process", "signal", "term", "fs"] }
+nix = { version = "0.29", features = ["process", "signal", "term", "fs", "resource"] }
 
 # Pattern matching
 globset = "0.4"

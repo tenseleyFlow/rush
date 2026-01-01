@@ -77,7 +77,15 @@ pub fn execute_pipeline_background(
 
     // Build command string for display
     let mut command_parts = Vec::new();
-    for simple_cmd in &pipeline.commands {
+    for element in &pipeline.commands {
+        let simple_cmd = match element {
+            rush_parser::ast::PipelineElement::Simple(cmd) => cmd,
+            rush_parser::ast::PipelineElement::Subshell(_) => {
+                return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                    "Subshells in pipelines not yet fully supported".to_string()
+                )));
+            }
+        };
         let expanded = rush_expand::expand_words(&simple_cmd.words, context)
             .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
         if !expanded.is_empty() {
@@ -91,9 +99,19 @@ pub fn execute_pipeline_background(
     let mut prev_stdout = None;
     let mut pgid: Option<Pid> = None;
 
-    for (i, simple_cmd) in pipeline.commands.iter().enumerate() {
+    for (i, element) in pipeline.commands.iter().enumerate() {
         let is_first = i == 0;
         let is_last = i == pipeline.commands.len() - 1;
+
+        // Get the simple command from the element
+        let simple_cmd = match element {
+            rush_parser::ast::PipelineElement::Simple(cmd) => cmd,
+            rush_parser::ast::PipelineElement::Subshell(_) => {
+                return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                    "Subshells in pipelines not yet fully supported".to_string()
+                )));
+            }
+        };
 
         // Expand words
         let expanded = rush_expand::expand_words(&simple_cmd.words, context)

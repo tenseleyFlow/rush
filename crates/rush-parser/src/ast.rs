@@ -37,6 +37,8 @@ pub enum CommandType {
     Case(CaseStatement),
     /// Function definition
     Function(FunctionDef),
+    /// Subshell: (commands)
+    Subshell(Subshell),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +54,14 @@ pub struct SimpleCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline {
     /// Commands connected by pipes
-    pub commands: Vec<SimpleCommand>,
+    pub commands: Vec<PipelineElement>,
+}
+
+/// An element in a pipeline - can be a simple command or a subshell
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineElement {
+    Simple(SimpleCommand),
+    Subshell(Subshell),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +166,12 @@ pub struct FunctionDef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subshell {
+    /// Commands to execute in a subshell
+    pub commands: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assignment {
     pub name: String,
     /// Optional array index for array[index]=value
@@ -243,8 +258,15 @@ pub enum VarExpansion {
 }
 
 impl Pipeline {
-    pub fn new(commands: Vec<SimpleCommand>) -> Self {
+    pub fn new(commands: Vec<PipelineElement>) -> Self {
         Self { commands }
+    }
+
+    /// Helper to create a pipeline from simple commands
+    pub fn from_simple_commands(commands: Vec<SimpleCommand>) -> Self {
+        Self {
+            commands: commands.into_iter().map(PipelineElement::Simple).collect(),
+        }
     }
 
     pub fn is_simple(&self) -> bool {
@@ -366,6 +388,12 @@ impl CaseClause {
 impl FunctionDef {
     pub fn new(name: String, body: Vec<CompleteCommand>) -> Self {
         Self { name, body }
+    }
+}
+
+impl Subshell {
+    pub fn new(commands: Vec<CompleteCommand>) -> Self {
+        Self { commands }
     }
 }
 

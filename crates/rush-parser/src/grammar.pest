@@ -35,8 +35,11 @@ closing_keyword = @{ (";;" | "fi" | "done" | "esac" | "elif" | "else") ~ &(ws | 
 and_or_list = { pipeline ~ (ws* ~ and_or_op ~ ws* ~ pipeline)* }
 and_or_op = { "&&" | "||" }
 
-// Pipeline: commands connected by pipes
-pipeline = { simple_command ~ (ws* ~ "|" ~ ws* ~ simple_command)* }
+// Pipeline: commands or subshells connected by pipes
+pipeline = { pipeline_element ~ (ws* ~ "|" ~ ws* ~ pipeline_element)* }
+
+// An element in a pipeline can be a simple command or a subshell
+pipeline_element = { subshell | simple_command }
 
 // Control flow statements
 // Keywords must be followed by whitespace, separator, or EOI (not word characters)
@@ -74,6 +77,10 @@ case_clause = {
 }
 
 pattern = { word }
+
+// Subshell: (commands)
+// Executes commands in a subprocess
+subshell = { "(" ~ separator? ~ command_list ~ separator? ~ ")" }
 
 // Function definition: function name { body; } or name() { body; }
 function_definition = {
@@ -157,7 +164,20 @@ var_expansion = {
     | "${" ~ var_name ~ "[" ~ array_subscript ~ "]" ~ "}"  // ${arr[index]} - array element
     | "${" ~ var_name ~ "[" ~ ("@" | "*") ~ "]" ~ "}"  // ${arr[@]} or ${arr[*]} - all elements
     | "${" ~ var_name ~ var_modifier? ~ "}"  // ${VAR} or ${VAR...}
+    | "$" ~ special_var  // $?, $#, $@, $*, $0, $1, etc.
     | "$" ~ var_name  // $VAR
+}
+
+// Special shell variables: $?, $#, $@, $*, $0, $1, $2, ..., $$, $!, etc.
+special_var = @{
+    "?"  // Exit status of last command
+    | "#"  // Number of positional parameters
+    | "@"  // All positional parameters (as separate words)
+    | "*"  // All positional parameters (as single word)
+    | "$"  // Process ID
+    | "!"  // Background job PID
+    | "0"  // Shell/script name
+    | ASCII_DIGIT+  // Positional parameters: $1, $2, ..., $10, etc.
 }
 
 var_modifier = {
@@ -187,8 +207,15 @@ arithmetic_expansion = { "$((" ~ arithmetic_expr_content ~ "))" }
 arithmetic_expr_content = @{ (!("))" | NEWLINE) ~ ANY)* }
 
 // Command substitution: $(command)
+// Handles nested parentheses: $(echo $(echo inner))
 command_substitution = { "$(" ~ command_subst_content ~ ")" }
-command_subst_content = @{ (!(")" | NEWLINE) ~ ANY)* }
+command_subst_content = { command_subst_part* }
+command_subst_part = {
+    nested_parens
+    | command_subst_text
+}
+nested_parens = { "(" ~ command_subst_content ~ ")" }
+command_subst_text = { (!(")" | "(" | NEWLINE) ~ ANY)+ }
 
 // Reserved keywords that cannot be used as bare words
 keyword = { ("if" | "then" | "elif" | "else" | "fi" | "while" | "do" | "done" | "for" | "in" | "case" | "esac") ~ &(ws | NEWLINE | ";" | EOI) }

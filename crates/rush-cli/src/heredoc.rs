@@ -18,13 +18,30 @@ fn command_has_heredocs(cmd: &CompleteCommand) -> bool {
     match &cmd.command {
         CommandType::Simple(simple_cmd) => simple_command_has_heredocs(simple_cmd),
         CommandType::Pipeline(pipeline) => {
-            pipeline.commands.iter().any(simple_command_has_heredocs)
+            pipeline.commands.iter().any(|elem| {
+                if let rush_parser::ast::PipelineElement::Simple(cmd) = elem {
+                    simple_command_has_heredocs(cmd)
+                } else {
+                    false // Subshells don't have heredocs at the pipeline level
+                }
+            })
         }
         CommandType::AndOrList(list) => {
-            simple_command_has_heredocs(&list.first.commands[0])
-                || list.rest.iter().any(|(_, p)| {
-                    p.commands.iter().any(simple_command_has_heredocs)
+            list.first.commands.iter().any(|elem| {
+                if let rush_parser::ast::PipelineElement::Simple(cmd) = elem {
+                    simple_command_has_heredocs(cmd)
+                } else {
+                    false
+                }
+            }) || list.rest.iter().any(|(_, p)| {
+                p.commands.iter().any(|elem| {
+                    if let rush_parser::ast::PipelineElement::Simple(cmd) = elem {
+                        simple_command_has_heredocs(cmd)
+                    } else {
+                        false
+                    }
                 })
+            })
         }
         _ => false,
     }
@@ -55,17 +72,23 @@ fn collect_command_delimiters(cmd: &CompleteCommand, delimiters: &mut Vec<String
             collect_simple_delimiters(simple_cmd, delimiters);
         }
         CommandType::Pipeline(pipeline) => {
-            for simple_cmd in &pipeline.commands {
-                collect_simple_delimiters(simple_cmd, delimiters);
+            for elem in &pipeline.commands {
+                if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                    collect_simple_delimiters(simple_cmd, delimiters);
+                }
             }
         }
         CommandType::AndOrList(list) => {
-            for simple_cmd in &list.first.commands {
-                collect_simple_delimiters(simple_cmd, delimiters);
+            for elem in &list.first.commands {
+                if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                    collect_simple_delimiters(simple_cmd, delimiters);
+                }
             }
             for (_, pipeline) in &list.rest {
-                for simple_cmd in &pipeline.commands {
-                    collect_simple_delimiters(simple_cmd, delimiters);
+                for elem in &pipeline.commands {
+                    if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                        collect_simple_delimiters(simple_cmd, delimiters);
+                    }
                 }
             }
         }
@@ -100,17 +123,23 @@ fn fill_command_content(cmd: &mut CompleteCommand, content_map: &std::collection
             fill_simple_content(simple_cmd, content_map);
         }
         CommandType::Pipeline(pipeline) => {
-            for simple_cmd in &mut pipeline.commands {
-                fill_simple_content(simple_cmd, content_map);
+            for elem in &mut pipeline.commands {
+                if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                    fill_simple_content(simple_cmd, content_map);
+                }
             }
         }
         CommandType::AndOrList(list) => {
-            for simple_cmd in &mut list.first.commands {
-                fill_simple_content(simple_cmd, content_map);
+            for elem in &mut list.first.commands {
+                if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                    fill_simple_content(simple_cmd, content_map);
+                }
             }
             for (_, pipeline) in &mut list.rest {
-                for simple_cmd in &mut pipeline.commands {
-                    fill_simple_content(simple_cmd, content_map);
+                for elem in &mut pipeline.commands {
+                    if let rush_parser::ast::PipelineElement::Simple(simple_cmd) = elem {
+                        fill_simple_content(simple_cmd, content_map);
+                    }
                 }
             }
         }

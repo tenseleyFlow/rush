@@ -24,7 +24,7 @@ pub enum RedirectError {
 pub fn apply_redirects(
     cmd: &mut Command,
     redirects: &[Redirect],
-    context: &Context,
+    context: &mut Context,
 ) -> Result<Option<String>, RedirectError> {
     let mut stdin_content = None;
     for redirect in redirects {
@@ -38,7 +38,7 @@ pub fn apply_redirects(
 fn apply_single_redirect(
     cmd: &mut Command,
     redirect: &Redirect,
-    context: &Context,
+    context: &mut Context,
 ) -> Result<Option<String>, RedirectError> {
     match redirect {
         Redirect::Input { file } => {

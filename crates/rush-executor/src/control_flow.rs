@@ -1,6 +1,7 @@
 use rush_expand::Context;
 use rush_parser::{CaseStatement, CompleteCommand, ForStatement, IfStatement, WhileStatement};
-use crate::{ExecutionResult, PipelineError};
+use crate::{ExecutionError, ExecutionResult, PipelineError};
+use globset::Glob;
 
 /// Execute an if statement
 pub fn execute_if(
@@ -49,7 +50,12 @@ pub fn execute_while(
         }
 
         // Execute the loop body
-        last_result = execute_command_list(&while_stmt.body, context)?;
+        match execute_command_list(&while_stmt.body, context) {
+            Ok(result) => last_result = result,
+            Err(PipelineError::Break) => break,
+            Err(PipelineError::Continue) => continue,
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(last_result)
@@ -83,10 +89,30 @@ pub fn execute_for(
         }
 
         // Execute the loop body
-        last_result = execute_command_list(&for_stmt.body, context)?;
+        match execute_command_list(&for_stmt.body, context) {
+            Ok(result) => last_result = result,
+            Err(PipelineError::Break) => break,
+            Err(PipelineError::Continue) => continue,
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(last_result)
+}
+
+/// Check if a string matches a glob pattern (for case statement matching)
+fn matches_pattern(text: &str, pattern: &str) -> bool {
+    // Try to compile the glob pattern
+    match Glob::new(pattern) {
+        Ok(glob) => {
+            let matcher = glob.compile_matcher();
+            matcher.is_match(text)
+        }
+        Err(_) => {
+            // If pattern is invalid, fall back to exact string matching
+            text == pattern
+        }
+    }
 }
 
 /// Execute a case statement
@@ -107,9 +133,8 @@ pub fn execute_case(
             let pattern_value = expand_word(pattern, context)
                 .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
 
-            // TODO: Implement glob pattern matching
-            // For now, just do exact string matching
-            if word_value == pattern_value {
+            // Use glob pattern matching
+            if matches_pattern(&word_value, &pattern_value) {
                 // Pattern matched, execute this clause's commands
                 return execute_command_list(&clause.body, context);
             }
@@ -127,7 +152,12 @@ pub(crate) fn execute_complete_command(
 ) -> Result<ExecutionResult, PipelineError> {
     use rush_parser::ast::CommandType;
 
-    // TODO: Handle background execution (cmd.background)
+    // Handle background execution
+    #[cfg(unix)]
+    if cmd.background {
+        return execute_background(cmd, context);
+    }
+
     match &cmd.command {
         CommandType::Simple(simple_cmd) => {
             Ok(crate::execute_simple_with_redirects(simple_cmd, context, false)?)
@@ -142,6 +172,90 @@ pub(crate) fn execute_complete_command(
             // Store function in context
             context.functions.insert(function_def.name.clone(), function_def.clone());
             Ok(crate::command::success_result())
+        }
+        CommandType::Subshell(subshell) => {
+            crate::execute_subshell(subshell, context).map_err(|e| {
+                PipelineError::ExecutionError(ExecutionError::CommandNotFound(e))
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+fn execute_background(
+    cmd: &CompleteCommand,
+    context: &mut Context,
+) -> Result<ExecutionResult, PipelineError> {
+    use rush_parser::ast::CommandType;
+    use std::process::{Command, Stdio};
+    use std::os::unix::process::CommandExt;
+    use nix::unistd::{setpgid, Pid};
+
+    // For now, only support simple commands and pipelines in background
+    match &cmd.command {
+        CommandType::Simple(simple_cmd) => {
+            // Expand the command
+            let expanded = rush_expand::expand_words(&simple_cmd.words, context)
+                .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
+
+            if expanded.is_empty() {
+                return Ok(crate::command::success_result());
+            }
+
+            let command_name = &expanded[0];
+            let args = &expanded[1..];
+
+            // Build the command
+            let program_path = crate::command::find_in_path(command_name)
+                .ok_or_else(|| crate::ExecutionError::CommandNotFound(
+                    rush_interactive::ErrorHints::command_not_found(command_name)
+                ))?;
+
+            let mut command = Command::new(program_path);
+            command.args(args);
+
+            // Background jobs: stdin from /dev/null, stdout/stderr inherited
+            command.stdin(Stdio::null());
+            command.stdout(Stdio::inherit());
+            command.stderr(Stdio::inherit());
+
+            // Set up process group
+            unsafe {
+                command.pre_exec(|| {
+                    // Put the child in its own process group
+                    setpgid(Pid::from_raw(0), Pid::from_raw(0))?;
+                    Ok(())
+                });
+            }
+
+            // Spawn the child process
+            let child = command.spawn()
+                .map_err(|e| PipelineError::IoError(e))?;
+            let child_pid = Pid::from_raw(child.id() as i32);
+
+            // Set the child's process group (belt and suspenders)
+            let _ = setpgid(child_pid, child_pid);
+
+            // Add to job list
+            let command_str = expanded.join(" ");
+            let job_id = context.job_list.add_job(
+                child_pid,  // pgid = pid for simple commands
+                command_str.clone(),
+                vec![child_pid],
+                false,  // not foreground
+            );
+
+            // Print job notification
+            println!("[{}] {}", job_id, child_pid);
+
+            // Return success immediately (don't wait)
+            Ok(crate::command::success_result())
+        }
+        _ => {
+            // For now, don't support complex commands in background
+            // Fall back to foreground execution
+            eprintln!("rush: background execution of complex commands not yet supported");
+            execute_complete_command(&CompleteCommand::foreground(cmd.command.clone()), context)
         }
     }
 }
