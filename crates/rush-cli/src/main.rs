@@ -324,7 +324,7 @@ fn execute_complete_command(
 ) -> Result<i32, String> {
     use rush_executor::{
         execute_and_or_list, execute_case, execute_for, execute_if, execute_pipeline,
-        execute_simple_with_redirects, execute_subshell, execute_while,
+        execute_select, execute_simple_with_redirects, execute_subshell, execute_while,
     };
     use rush_parser::ast::CommandType;
 
@@ -361,6 +361,10 @@ fn execute_complete_command(
         }
         CommandType::Case(case_stmt) => {
             execute_case(case_stmt, context)
+                .map_err(|e| e.to_string())?
+        }
+        CommandType::Select(select_stmt) => {
+            execute_select(select_stmt, context)
                 .map_err(|e| e.to_string())?
         }
         CommandType::Function(function_def) => {

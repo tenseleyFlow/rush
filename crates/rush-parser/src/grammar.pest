@@ -19,6 +19,7 @@ complete_command = {
     | if_statement
     | while_statement
     | for_statement
+    | select_statement
     | case_statement
     | !closing_keyword ~ and_or_list)
     ~ background_marker?
@@ -66,6 +67,10 @@ while_statement = {
 
 for_statement = {
     "for" ~ keyword_boundary ~ ws+ ~ var_name ~ ws+ ~ "in" ~ keyword_boundary ~ (ws+ ~ word)* ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator? ~ "done" ~ keyword_boundary
+}
+
+select_statement = {
+    "select" ~ keyword_boundary ~ ws+ ~ var_name ~ ws+ ~ "in" ~ keyword_boundary ~ (ws+ ~ word)* ~ separator ~ "do" ~ keyword_boundary ~ separator ~ command_list ~ separator? ~ "done" ~ keyword_boundary
 }
 
 case_statement = {

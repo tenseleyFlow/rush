@@ -33,6 +33,8 @@ pub enum CommandType {
     While(WhileStatement),
     /// For loop
     For(ForStatement),
+    /// Select loop (menu selection)
+    Select(SelectStatement),
     /// Case statement
     Case(CaseStatement),
     /// Function definition
@@ -164,6 +166,16 @@ pub struct ForStatement {
     /// Words to iterate through
     pub words: Vec<Word>,
     /// Commands to execute for each word
+    pub body: Vec<CompleteCommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectStatement {
+    /// Variable name to store selected item
+    pub var_name: String,
+    /// Words to present as menu options
+    pub words: Vec<Word>,
+    /// Commands to execute after selection
     pub body: Vec<CompleteCommand>,
 }
 

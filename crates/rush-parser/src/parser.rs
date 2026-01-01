@@ -5,7 +5,8 @@ use thiserror::Error;
 use crate::ast::{
     AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CommandType, CompleteCommand,
     CondExpr, ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, PipelineElement,
-    Redirect, SimpleCommand, Statement, Subshell, VarExpansion, WhileStatement, Word, WordPart,
+    Redirect, SelectStatement, SimpleCommand, Statement, Subshell, VarExpansion, WhileStatement,
+    Word, WordPart,
 };
 
 #[derive(Parser)]
@@ -89,6 +90,7 @@ fn parse_complete_command(pair: pest::iterators::Pair<Rule>) -> Result<CompleteC
         Rule::if_statement => CommandType::If(parse_if_statement(command_pair)?),
         Rule::while_statement => CommandType::While(parse_while_statement(command_pair)?),
         Rule::for_statement => CommandType::For(parse_for_statement(command_pair)?),
+        Rule::select_statement => CommandType::Select(parse_select_statement(command_pair)?),
         Rule::case_statement => CommandType::Case(parse_case_statement(command_pair)?),
         Rule::and_or_list => parse_and_or_list_type(command_pair)?,
         _ => return Err(ParseError::UnexpectedRule(command_pair.as_rule())),
@@ -1025,6 +1027,30 @@ fn parse_for_statement(pair: pest::iterators::Pair<Rule>) -> Result<ForStatement
     Ok(ForStatement::new(var_name, words, body))
 }
 
+fn parse_select_statement(pair: pest::iterators::Pair<Rule>) -> Result<SelectStatement, ParseError> {
+    let mut var_name = String::new();
+    let mut words = Vec::new();
+    let mut body = Vec::new();
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::var_name => {
+                var_name = inner_pair.as_str().to_string();
+            }
+            Rule::word => {
+                words.push(parse_word(inner_pair)?);
+            }
+            Rule::command_list => {
+                body = parse_command_list(inner_pair)?;
+            }
+            Rule::NEWLINE => {},
+            _ => {},
+        }
+    }
+
+    Ok(SelectStatement { var_name, words, body })
+}
+
 fn parse_case_statement(pair: pest::iterators::Pair<Rule>) -> Result<CaseStatement, ParseError> {
     let mut word = None;
     let mut clauses = Vec::new();
@@ -1255,9 +1281,17 @@ mod tests {
         match result {
             Statement::Complete(complete_cmd) => {
                 if let CommandType::Pipeline(pipeline) = &complete_cmd.command {
-                assert_eq!(pipeline.commands.len(), 2);
-                assert_eq!(pipeline.commands[0].words.len(), 1);
-                assert_eq!(pipeline.commands[1].words.len(), 2);
+                    assert_eq!(pipeline.commands.len(), 2);
+                    if let PipelineElement::Simple(cmd) = &pipeline.commands[0] {
+                        assert_eq!(cmd.words.len(), 1);
+                    } else {
+                        panic!("Expected Simple command");
+                    }
+                    if let PipelineElement::Simple(cmd) = &pipeline.commands[1] {
+                        assert_eq!(cmd.words.len(), 2);
+                    } else {
+                        panic!("Expected Simple command");
+                    }
                 } else {
                     panic!("Expected Simple or Pipeline command");
                 }
@@ -1415,8 +1449,12 @@ mod tests {
         match result {
             Statement::Complete(complete_cmd) => {
                 if let CommandType::Pipeline(pipeline) = &complete_cmd.command {
-                assert_eq!(pipeline.commands.len(), 2);
-                assert_eq!(pipeline.commands[0].redirects.len(), 1);
+                    assert_eq!(pipeline.commands.len(), 2);
+                    if let PipelineElement::Simple(cmd) = &pipeline.commands[0] {
+                        assert_eq!(cmd.redirects.len(), 1);
+                    } else {
+                        panic!("Expected Simple command");
+                    }
                 } else {
                     panic!("Expected Simple or Pipeline command");
                 }
@@ -1527,6 +1565,36 @@ mod tests {
                 assert!(!cmd.background, "Command should not be marked as background");
             }
             Ok(other) => panic!("Expected Complete, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_statement() {
+        let input = "select opt in a b c; do echo $opt; done";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(cmd)) => {
+                if let CommandType::Select(select) = &cmd.command {
+                    assert_eq!(select.var_name, "opt");
+                    assert_eq!(select.words.len(), 3);
+                    assert!(!select.body.is_empty());
+                } else {
+                    panic!("Expected Select, got: {:?}", cmd.command);
+                }
+            }
+            Ok(other) => panic!("Expected Complete, got: {:?}", other),
+            Err(e) => panic!("Parse error: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_multiline() {
+        let input = "select item in foo bar baz\ndo\necho \"Selected: $item\"\ndone";
+        let result = parse_line(input);
+        match result {
+            Ok(Statement::Complete(cmd)) if matches!(cmd.command, CommandType::Select(_)) => {}
+            Ok(other) => panic!("Expected Select, got: {:?}", other),
             Err(e) => panic!("Parse error: {}", e),
         }
     }

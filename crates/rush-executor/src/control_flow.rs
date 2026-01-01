@@ -1,6 +1,6 @@
 use rush_expand::Context;
 use rush_parser::{CaseStatement, CompleteCommand, ForStatement, IfStatement, WhileStatement};
-use rush_parser::ast::{CondExpr, Word};
+use rush_parser::ast::{CondExpr, SelectStatement, Word};
 use crate::{ExecutionError, ExecutionResult, PipelineError};
 use regex::Regex;
 use globset::Glob;
@@ -147,6 +147,102 @@ pub fn execute_case(
     Ok(crate::command::success_result())
 }
 
+/// Execute a select loop
+///
+/// The select loop displays a numbered menu and reads user input:
+/// ```bash
+/// select var in option1 option2 option3; do
+///     echo "Selected: $var"
+/// done
+/// ```
+pub fn execute_select(
+    select_stmt: &SelectStatement,
+    context: &mut Context,
+) -> Result<ExecutionResult, PipelineError> {
+    use rush_expand::expand_word;
+    use std::io::{self, BufRead, Write};
+
+    let mut last_result = crate::command::success_result();
+
+    // Expand all the words to get menu items
+    let mut items = Vec::new();
+    for word in &select_stmt.words {
+        let expanded = expand_word(word, context)
+            .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
+        items.push(expanded);
+    }
+
+    // If no items, return immediately
+    if items.is_empty() {
+        return Ok(last_result);
+    }
+
+    // Get PS3 prompt (default: "#? ") - converted to owned String to avoid borrow conflicts
+    let ps3 = context.get_var("PS3").unwrap_or("#? ").to_string();
+
+    // Calculate column width for menu display
+    let num_width = items.len().to_string().len();
+
+    loop {
+        // Display the menu to stderr (standard bash behavior)
+        for (i, item) in items.iter().enumerate() {
+            eprintln!("{:>width$}) {}", i + 1, item, width = num_width);
+        }
+
+        // Print the prompt and flush
+        eprint!("{}", ps3);
+        io::stderr().flush().ok();
+
+        // Read user input
+        let stdin = io::stdin();
+        let mut line = String::new();
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => {
+                // EOF - exit the loop
+                break;
+            }
+            Ok(_) => {
+                let input = line.trim();
+
+                // Store raw input in REPLY
+                let _ = context.set_var("REPLY", input);
+
+                // Parse the number
+                if let Ok(num) = input.parse::<usize>() {
+                    if num >= 1 && num <= items.len() {
+                        // Valid selection - set the variable
+                        if let Err(name) = context.set_var(&select_stmt.var_name, &items[num - 1]) {
+                            return Err(PipelineError::IoError(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                format!("{}: readonly variable", name),
+                            )));
+                        }
+                    } else {
+                        // Invalid number - set variable to empty
+                        let _ = context.set_var(&select_stmt.var_name, "");
+                    }
+                } else {
+                    // Not a number - set variable to empty
+                    let _ = context.set_var(&select_stmt.var_name, "");
+                }
+
+                // Execute the loop body
+                match execute_command_list(&select_stmt.body, context) {
+                    Ok(result) => last_result = result,
+                    Err(PipelineError::Break) => break,
+                    Err(PipelineError::Continue) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => {
+                return Err(PipelineError::IoError(e));
+            }
+        }
+    }
+
+    Ok(last_result)
+}
+
 /// Execute a complete command (helper for recursive execution)
 pub(crate) fn execute_complete_command(
     cmd: &CompleteCommand,
@@ -183,6 +279,7 @@ pub(crate) fn execute_complete_command(
         CommandType::ExtendedTest(cond_expr) => {
             execute_extended_test(cond_expr, context)
         }
+        CommandType::Select(select_stmt) => execute_select(select_stmt, context),
     }
 }
 
