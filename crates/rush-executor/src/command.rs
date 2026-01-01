@@ -180,6 +180,7 @@ pub(crate) fn execute_builtin(
         "set" => Some(builtin_set(args, context)),
         "shopt" => Some(builtin_shopt(args, context)),
         "export" => Some(builtin_export(args, context)),
+        "unset" => Some(builtin_unset(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -609,6 +610,46 @@ fn builtin_export(args: &[String], context: &mut rush_expand::Context) -> Execut
                     context.export_var(var, "");
                 }
             }
+        }
+    }
+
+    success_result()
+}
+
+/// unset builtin - Unset variables or functions
+fn builtin_unset(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut unset_vars = true;
+    let mut unset_funcs = true;
+    let mut names_to_unset = Vec::new();
+
+    // Parse arguments
+    for arg in args {
+        if arg == "-v" {
+            unset_vars = true;
+            unset_funcs = false;
+        } else if arg == "-f" {
+            unset_vars = false;
+            unset_funcs = true;
+        } else if arg.starts_with('-') {
+            eprintln!("unset: {}: invalid option", arg);
+            return error_result();
+        } else {
+            names_to_unset.push(arg.clone());
+        }
+    }
+
+    if names_to_unset.is_empty() {
+        // No error, just do nothing (POSIX behavior)
+        return success_result();
+    }
+
+    // Unset each name
+    for name in &names_to_unset {
+        if unset_vars {
+            context.unset_var(name);
+        }
+        if unset_funcs {
+            context.functions.remove(name);
         }
     }
 
