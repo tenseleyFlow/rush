@@ -174,6 +174,7 @@ pub(crate) fn execute_builtin(
         "alias" => Some(builtin_alias(args, context)),
         "unalias" => Some(builtin_unalias(args, context)),
         "trap" => Some(builtin_trap(args, context)),
+        "set" => Some(builtin_set(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -393,6 +394,55 @@ fn builtin_trap(args: &[String], context: &mut rush_expand::Context) -> Executio
     } else {
         success_result()
     }
+}
+
+/// set builtin - Set or display shell options
+fn builtin_set(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    // No arguments: display all variables
+    if args.is_empty() {
+        let mut vars: Vec<_> = context.all_vars().iter().collect();
+        vars.sort_by_key(|(name, _)| *name);
+        for (name, value) in vars {
+            println!("{}={}", name, value);
+        }
+        return success_result();
+    }
+
+    // Process options
+    for arg in args {
+        if arg.starts_with('-') || arg.starts_with('+') {
+            let enable = arg.starts_with('-');
+            let opts = &arg[1..];
+
+            for ch in opts.chars() {
+                match ch {
+                    'e' => context.options.errexit = enable,
+                    'x' => context.options.xtrace = enable,
+                    'u' => context.options.nounset = enable,
+                    'f' => context.options.noglob = enable,
+                    'o' => {
+                        // -o option_name format (next arg is the option)
+                        // For simplicity, we'll handle this separately if needed
+                        eprintln!("set: -o option requires an argument");
+                        return error_result();
+                    }
+                    _ => {
+                        eprintln!("set: -{}: invalid option", ch);
+                        return error_result();
+                    }
+                }
+            }
+        } else if arg == "--" {
+            // End of options marker
+            break;
+        } else {
+            // Positional parameters (not implemented yet)
+            eprintln!("set: positional parameters not yet supported");
+            return error_result();
+        }
+    }
+
+    success_result()
 }
 
 #[cfg(unix)]

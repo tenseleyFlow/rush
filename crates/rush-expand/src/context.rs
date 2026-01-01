@@ -4,6 +4,33 @@ use std::env;
 #[cfg(unix)]
 use rush_job::JobList;
 
+/// Shell options that can be set with the 'set' builtin
+#[derive(Debug, Clone)]
+pub struct ShellOptions {
+    /// Exit immediately if a command exits with a non-zero status
+    pub errexit: bool,
+    /// Print commands before executing them
+    pub xtrace: bool,
+    /// Treat unset variables as an error
+    pub nounset: bool,
+    /// Pipeline fails if any command fails (not just the last)
+    pub pipefail: bool,
+    /// Disable filename expansion (globbing)
+    pub noglob: bool,
+}
+
+impl Default for ShellOptions {
+    fn default() -> Self {
+        Self {
+            errexit: false,
+            xtrace: false,
+            nounset: false,
+            pipefail: false,
+            noglob: false,
+        }
+    }
+}
+
 /// Execution context holding shell variables and state
 #[derive(Debug)]
 pub struct Context {
@@ -21,6 +48,8 @@ pub struct Context {
     pub aliases: HashMap<String, String>,
     /// Signal traps (signal name/number -> command)
     pub traps: HashMap<String, String>,
+    /// Shell options (set -e, set -x, etc.)
+    pub options: ShellOptions,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
@@ -37,6 +66,7 @@ impl Context {
             arrays: HashMap::new(),
             aliases: HashMap::new(),
             traps: HashMap::new(),
+            options: ShellOptions::default(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         };
@@ -60,6 +90,7 @@ impl Context {
             arrays: HashMap::new(),
             aliases: HashMap::new(),
             traps: HashMap::new(),
+            options: ShellOptions::default(),
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
         }
