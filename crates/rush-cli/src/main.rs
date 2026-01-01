@@ -34,6 +34,18 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    // Register cleanup handler for process substitutions
+    // This will clean up any remaining FIFOs when the shell exits
+    #[cfg(unix)]
+    {
+        extern "C" fn cleanup_on_exit() {
+            rush_executor::cleanup_process_substs();
+        }
+        unsafe {
+            nix::libc::atexit(cleanup_on_exit);
+        }
+    }
+
     // Set up signal handling for the shell
     if let Err(e) = rush_executor::setup_shell_signals() {
         eprintln!("rush: failed to set up signal handlers: {}", e);

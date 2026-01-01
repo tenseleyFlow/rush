@@ -24,3 +24,4 @@ nu-ansi-term = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
+nix = { workspace = true }

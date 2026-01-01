@@ -203,21 +203,55 @@ fn apply_single_redirect(
         }
 
         Redirect::ProcessSubstInput { command } => {
-            // TODO: Implement process substitution <(command)
-            // Will create FIFO, fork process, connect stdout to FIFO
-            Err(RedirectError::FileOpenError(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!("Process substitution not yet implemented: <({})", command),
-            )))
+            // Process substitution: <(command)
+            // Creates a FIFO that provides the command's stdout
+            #[cfg(unix)]
+            {
+                let fifo_path = crate::process_subst::execute_process_subst_input(command, context)
+                    .map_err(|e| RedirectError::FileOpenError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Process substitution failed: {}", e),
+                    )))?;
+
+                // Open the FIFO for reading (this will block until the writer opens it)
+                let file_handle = File::open(&fifo_path)?;
+                cmd.stdin(file_handle);
+                Ok(None)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(RedirectError::FileOpenError(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Process substitution not supported on this platform".to_string(),
+                )))
+            }
         }
 
         Redirect::ProcessSubstOutput { command } => {
-            // TODO: Implement process substitution >(command)
-            // Will create FIFO, fork process, connect stdin to FIFO
-            Err(RedirectError::FileOpenError(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!("Process substitution not yet implemented: >({})", command),
-            )))
+            // Process substitution: >(command)
+            // Creates a FIFO that feeds into the command's stdin
+            #[cfg(unix)]
+            {
+                let fifo_path = crate::process_subst::execute_process_subst_output(command, context)
+                    .map_err(|e| RedirectError::FileOpenError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Process substitution failed: {}", e),
+                    )))?;
+
+                // Open the FIFO for writing (this will block until the reader opens it)
+                let file_handle = OpenOptions::new()
+                    .write(true)
+                    .open(&fifo_path)?;
+                cmd.stdout(file_handle);
+                Ok(None)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(RedirectError::FileOpenError(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Process substitution not supported on this platform".to_string(),
+                )))
+            }
         }
     }
 }

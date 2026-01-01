@@ -5,6 +5,7 @@ pub mod command;
 pub mod command_subst_exec;
 pub mod control_flow;
 pub mod pipeline;
+pub mod process_subst;
 pub mod redirect;
 pub mod subshell;
 pub mod terminal;
@@ -17,6 +18,7 @@ pub use command::JobControlInfo;
 pub use command_subst_exec::execute_for_substitution;
 pub use control_flow::{execute_case, execute_for, execute_if, execute_while};
 pub use pipeline::{execute_and_or_list, execute_pipeline, execute_simple_with_redirects, PipelineError};
+pub use process_subst::{cleanup_all as cleanup_process_substs, wait_for_all as wait_for_process_substs};
 pub use redirect::RedirectError;
 pub use subshell::{execute_subshell, execute_subshell_background};
 
