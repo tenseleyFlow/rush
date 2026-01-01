@@ -107,6 +107,9 @@ enum Token {
     Question,           // ?
     Colon,              // :
 
+    // Comma operator
+    Comma,              // ,
+
     // Parentheses
     LeftParen,
     RightParen,
@@ -295,6 +298,10 @@ fn tokenize(expr: &str) -> Result<Vec<Token>, ArithmeticError> {
                 chars.next();
                 tokens.push(Token::RightParen);
             }
+            ',' => {
+                chars.next();
+                tokens.push(Token::Comma);
+            }
             '0'..='9' => {
                 let num = parse_number(&mut chars)?;
                 tokens.push(Token::Number(num));
@@ -346,6 +353,7 @@ fn is_unary_context(token: Option<&Token>) -> bool {
             | Some(Token::LogicalNot)
             | Some(Token::Question)
             | Some(Token::Colon)
+            | Some(Token::Comma)
     )
 }
 
@@ -415,15 +423,29 @@ impl<'a> Parser<'a> {
 
     /// Entry point: parse full expression
     fn parse_expression(&mut self) -> Result<i64, ArithmeticError> {
-        Ok(self.parse_ternary()?.value())
+        Ok(self.parse_comma()?.value())
     }
 
     /// Parse expression returning LValue (for internal use)
     fn parse_expression_lvalue(&mut self) -> Result<LValue, ArithmeticError> {
-        self.parse_ternary()
+        self.parse_comma()
     }
 
-    /// Level 1: Ternary conditional (? :) - lowest precedence
+    /// Level 0: Comma operator (,) - lowest precedence
+    /// Evaluates all expressions from left to right and returns the last value
+    fn parse_comma(&mut self) -> Result<LValue, ArithmeticError> {
+        let mut result = self.parse_ternary()?;
+
+        while matches!(self.current(), Some(Token::Comma)) {
+            self.advance();
+            // Evaluate the next expression; previous result is discarded
+            result = self.parse_ternary()?;
+        }
+
+        Ok(result)
+    }
+
+    /// Level 1: Ternary conditional (? :)
     fn parse_ternary(&mut self) -> Result<LValue, ArithmeticError> {
         let condition = self.parse_assignment()?;
 
@@ -1175,5 +1197,48 @@ mod tests {
         assert_eq!(evaluate_arithmetic("2 ** 10", &mut ctx).unwrap(), 1024);
         // Right associative: 2 ** 3 ** 2 = 2 ** 9 = 512
         assert_eq!(evaluate_arithmetic("2 ** 3 ** 2", &mut ctx).unwrap(), 512);
+    }
+
+    // Comma operator tests
+
+    #[test]
+    fn test_comma_operator_simple() {
+        let mut ctx = Context::empty();
+        // Comma operator evaluates left to right, returns last value
+        assert_eq!(evaluate_arithmetic("1, 2, 3", &mut ctx).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_comma_operator_with_assignments() {
+        let mut ctx = Context::empty();
+        // (a=1, b=2, a+b) sets a and b, returns sum
+        assert_eq!(evaluate_arithmetic("a=1, b=2, a+b", &mut ctx).unwrap(), 3);
+        assert_eq!(ctx.get_var("a"), Some("1"));
+        assert_eq!(ctx.get_var("b"), Some("2"));
+    }
+
+    #[test]
+    fn test_comma_operator_side_effects() {
+        let mut ctx = Context::empty();
+        ctx.set_var("x", "0").unwrap();
+        // All expressions should be evaluated for side effects
+        assert_eq!(evaluate_arithmetic("x=1, x=2, x=3", &mut ctx).unwrap(), 3);
+        assert_eq!(ctx.get_var("x"), Some("3"));
+    }
+
+    #[test]
+    fn test_comma_operator_with_increment() {
+        let mut ctx = Context::empty();
+        ctx.set_var("i", "0").unwrap();
+        // Common for-loop style: init, condition check
+        assert_eq!(evaluate_arithmetic("i++, i++, i++", &mut ctx).unwrap(), 2);
+        assert_eq!(ctx.get_var("i"), Some("3"));
+    }
+
+    #[test]
+    fn test_comma_operator_in_parens() {
+        let mut ctx = Context::empty();
+        // Comma operator inside parentheses
+        assert_eq!(evaluate_arithmetic("2 * (1, 2, 3)", &mut ctx).unwrap(), 6);
     }
 }
