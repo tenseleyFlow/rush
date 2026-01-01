@@ -39,6 +39,8 @@ pub enum CommandType {
     Function(FunctionDef),
     /// Subshell: (commands)
     Subshell(Subshell),
+    /// Extended test: [[ expression ]]
+    ExtendedTest(CondExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,11 +59,29 @@ pub struct Pipeline {
     pub commands: Vec<PipelineElement>,
 }
 
-/// An element in a pipeline - can be a simple command or a subshell
+/// An element in a pipeline - can be a simple command, subshell, or extended test
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PipelineElement {
     Simple(SimpleCommand),
     Subshell(Subshell),
+    ExtendedTest(CondExpr),
+}
+
+/// Conditional expression for [[ ]] extended test
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CondExpr {
+    /// Logical OR: expr1 || expr2
+    Or(Box<CondExpr>, Box<CondExpr>),
+    /// Logical AND: expr1 && expr2
+    And(Box<CondExpr>, Box<CondExpr>),
+    /// Logical NOT: ! expr
+    Not(Box<CondExpr>),
+    /// Unary test: -z, -n, -f, -d, etc.
+    Unary { op: String, operand: Word },
+    /// Binary test: ==, !=, =~, -eq, -lt, etc.
+    Binary { left: Word, op: String, right: Word },
+    /// Single word (true if non-empty after expansion)
+    Word(Word),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

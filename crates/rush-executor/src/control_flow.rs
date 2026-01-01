@@ -1,6 +1,8 @@
 use rush_expand::Context;
 use rush_parser::{CaseStatement, CompleteCommand, ForStatement, IfStatement, WhileStatement};
+use rush_parser::ast::{CondExpr, Word};
 use crate::{ExecutionError, ExecutionResult, PipelineError};
+use regex::Regex;
 use globset::Glob;
 
 /// Execute an if statement
@@ -178,7 +180,249 @@ pub(crate) fn execute_complete_command(
                 PipelineError::ExecutionError(ExecutionError::CommandNotFound(e))
             })
         }
+        CommandType::ExtendedTest(cond_expr) => {
+            execute_extended_test(cond_expr, context)
+        }
     }
+}
+
+/// Execute an extended test [[ expression ]]
+pub fn execute_extended_test(
+    expr: &CondExpr,
+    context: &mut Context,
+) -> Result<ExecutionResult, PipelineError> {
+    let result = evaluate_cond_expr(expr, context)?;
+    Ok(crate::command::exit_code_to_result(if result { 0 } else { 1 }))
+}
+
+/// Evaluate a conditional expression and return true/false
+fn evaluate_cond_expr(expr: &CondExpr, context: &mut Context) -> Result<bool, PipelineError> {
+    match expr {
+        CondExpr::Or(left, right) => {
+            // Short-circuit OR
+            if evaluate_cond_expr(left, context)? {
+                Ok(true)
+            } else {
+                evaluate_cond_expr(right, context)
+            }
+        }
+        CondExpr::And(left, right) => {
+            // Short-circuit AND
+            if !evaluate_cond_expr(left, context)? {
+                Ok(false)
+            } else {
+                evaluate_cond_expr(right, context)
+            }
+        }
+        CondExpr::Not(inner) => {
+            Ok(!evaluate_cond_expr(inner, context)?)
+        }
+        CondExpr::Unary { op, operand } => {
+            let value = expand_word(operand, context)?;
+            evaluate_unary_test(op, &value)
+        }
+        CondExpr::Binary { left, op, right } => {
+            let left_val = expand_word(left, context)?;
+            let right_val = expand_word(right, context)?;
+            evaluate_binary_test(op, &left_val, &right_val, context)
+        }
+        CondExpr::Word(word) => {
+            // Single word is true if non-empty
+            let value = expand_word(word, context)?;
+            Ok(!value.is_empty())
+        }
+    }
+}
+
+/// Helper to expand a word
+fn expand_word(word: &Word, context: &mut Context) -> Result<String, PipelineError> {
+    rush_expand::expand_word(word, context)
+        .map_err(|e| PipelineError::ExpansionError(e.to_string()))
+}
+
+/// Evaluate unary test operator
+fn evaluate_unary_test(op: &str, value: &str) -> Result<bool, PipelineError> {
+    use std::fs;
+    use std::os::unix::fs::FileTypeExt;
+
+    match op {
+        "-z" => Ok(value.is_empty()),
+        "-n" => Ok(!value.is_empty()),
+        "-e" => Ok(fs::metadata(value).is_ok()),
+        "-f" => Ok(fs::metadata(value).map(|m| m.is_file()).unwrap_or(false)),
+        "-d" => Ok(fs::metadata(value).map(|m| m.is_dir()).unwrap_or(false)),
+        "-r" => {
+            use std::os::unix::fs::PermissionsExt;
+            Ok(fs::metadata(value).map(|m| m.permissions().mode() & 0o444 != 0).unwrap_or(false))
+        }
+        "-w" => {
+            use std::os::unix::fs::PermissionsExt;
+            Ok(fs::metadata(value).map(|m| m.permissions().mode() & 0o222 != 0).unwrap_or(false))
+        }
+        "-x" => {
+            use std::os::unix::fs::PermissionsExt;
+            Ok(fs::metadata(value).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+        }
+        "-s" => Ok(fs::metadata(value).map(|m| m.len() > 0).unwrap_or(false)),
+        "-L" | "-h" => Ok(fs::symlink_metadata(value).map(|m| m.file_type().is_symlink()).unwrap_or(false)),
+        "-p" => Ok(fs::metadata(value).map(|m| m.file_type().is_fifo()).unwrap_or(false)),
+        "-S" => Ok(fs::metadata(value).map(|m| m.file_type().is_socket()).unwrap_or(false)),
+        "-b" => Ok(fs::metadata(value).map(|m| m.file_type().is_block_device()).unwrap_or(false)),
+        "-c" => Ok(fs::metadata(value).map(|m| m.file_type().is_char_device()).unwrap_or(false)),
+        _ => Err(PipelineError::ExpansionError(format!("Unknown unary operator: {}", op))),
+    }
+}
+
+/// Evaluate binary test operator
+fn evaluate_binary_test(op: &str, left: &str, right: &str, context: &mut Context) -> Result<bool, PipelineError> {
+    match op {
+        "==" | "=" => {
+            // Pattern matching (glob-style)
+            if right.contains('*') || right.contains('?') || right.contains('[') {
+                let pattern = format!("^{}$", glob_to_regex(right));
+                let re = Regex::new(&pattern)
+                    .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
+                Ok(re.is_match(left))
+            } else {
+                Ok(left == right)
+            }
+        }
+        "!=" => {
+            if right.contains('*') || right.contains('?') || right.contains('[') {
+                let pattern = format!("^{}$", glob_to_regex(right));
+                let re = Regex::new(&pattern)
+                    .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
+                Ok(!re.is_match(left))
+            } else {
+                Ok(left != right)
+            }
+        }
+        "=~" => {
+            // Regex matching, sets BASH_REMATCH
+            match Regex::new(right) {
+                Ok(re) => {
+                    if let Some(captures) = re.captures(left) {
+                        // Set BASH_REMATCH array
+                        let matches: Vec<String> = captures
+                            .iter()
+                            .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
+                            .collect();
+                        context.arrays.insert(
+                            "BASH_REMATCH".to_string(),
+                            rush_expand::context::ArrayType::Indexed(matches),
+                        );
+                        Ok(true)
+                    } else {
+                        // Clear BASH_REMATCH on no match
+                        context.arrays.remove("BASH_REMATCH");
+                        Ok(false)
+                    }
+                }
+                Err(_) => {
+                    context.arrays.remove("BASH_REMATCH");
+                    Ok(false)
+                }
+            }
+        }
+        "<" => Ok(left < right),
+        ">" => Ok(left > right),
+        "-eq" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l == r)
+        }
+        "-ne" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l != r)
+        }
+        "-lt" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l < r)
+        }
+        "-le" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l <= r)
+        }
+        "-gt" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l > r)
+        }
+        "-ge" => {
+            let l: i64 = left.parse().unwrap_or(0);
+            let r: i64 = right.parse().unwrap_or(0);
+            Ok(l >= r)
+        }
+        "-nt" => {
+            // Newer than
+            use std::fs;
+            let left_time = fs::metadata(left).and_then(|m| m.modified()).ok();
+            let right_time = fs::metadata(right).and_then(|m| m.modified()).ok();
+            Ok(match (left_time, right_time) {
+                (Some(l), Some(r)) => l > r,
+                (Some(_), None) => true,
+                _ => false,
+            })
+        }
+        "-ot" => {
+            // Older than
+            use std::fs;
+            let left_time = fs::metadata(left).and_then(|m| m.modified()).ok();
+            let right_time = fs::metadata(right).and_then(|m| m.modified()).ok();
+            Ok(match (left_time, right_time) {
+                (Some(l), Some(r)) => l < r,
+                (None, Some(_)) => true,
+                _ => false,
+            })
+        }
+        "-ef" => {
+            // Same file (same device and inode)
+            use std::os::unix::fs::MetadataExt;
+            use std::fs;
+            let left_meta = fs::metadata(left).ok();
+            let right_meta = fs::metadata(right).ok();
+            Ok(match (left_meta, right_meta) {
+                (Some(l), Some(r)) => l.dev() == r.dev() && l.ino() == r.ino(),
+                _ => false,
+            })
+        }
+        _ => Err(PipelineError::ExpansionError(format!("Unknown binary operator: {}", op))),
+    }
+}
+
+/// Convert glob pattern to regex
+fn glob_to_regex(pattern: &str) -> String {
+    let mut result = String::new();
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '*' => result.push_str(".*"),
+            '?' => result.push('.'),
+            '[' => {
+                result.push('[');
+                // Handle character class
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if c == ']' {
+                        result.push(']');
+                        break;
+                    }
+                    result.push(c);
+                }
+            }
+            '.' | '+' | '^' | '$' | '(' | ')' | '{' | '}' | '|' | '\\' => {
+                result.push('\\');
+                result.push(ch);
+            }
+            _ => result.push(ch),
+        }
+    }
+
+    result
 }
 
 #[cfg(unix)]

@@ -85,6 +85,11 @@ pub fn execute_pipeline_background(
                     "Subshells in pipelines not yet fully supported".to_string()
                 )));
             }
+            rush_parser::ast::PipelineElement::ExtendedTest(_) => {
+                return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                    "Extended tests in pipelines not yet supported".to_string()
+                )));
+            }
         };
         let expanded = rush_expand::expand_words(&simple_cmd.words, context)
             .map_err(|e| PipelineError::ExpansionError(e.to_string()))?;
@@ -109,6 +114,11 @@ pub fn execute_pipeline_background(
             rush_parser::ast::PipelineElement::Subshell(_) => {
                 return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
                     "Subshells in pipelines not yet fully supported".to_string()
+                )));
+            }
+            rush_parser::ast::PipelineElement::ExtendedTest(_) => {
+                return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                    "Extended tests in pipelines not yet supported".to_string()
                 )));
             }
         };

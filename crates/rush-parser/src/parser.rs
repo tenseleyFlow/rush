@@ -4,8 +4,8 @@ use thiserror::Error;
 
 use crate::ast::{
     AndOrList, AndOrOp, Assignment, CaseClause, CaseStatement, CommandType, CompleteCommand,
-    ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, PipelineElement, Redirect,
-    SimpleCommand, Statement, Subshell, VarExpansion, WhileStatement, Word, WordPart,
+    CondExpr, ElifClause, ForStatement, FunctionDef, IfStatement, Pipeline, PipelineElement,
+    Redirect, SimpleCommand, Statement, Subshell, VarExpansion, WhileStatement, Word, WordPart,
 };
 
 #[derive(Parser)]
@@ -127,6 +127,7 @@ fn parse_and_or_list_type(pair: pest::iterators::Pair<Rule>) -> Result<CommandTy
             return Ok(match element {
                 PipelineElement::Simple(cmd) => CommandType::Simple(cmd),
                 PipelineElement::Subshell(subshell) => CommandType::Subshell(subshell),
+                PipelineElement::ExtendedTest(cond) => CommandType::ExtendedTest(cond),
             });
         } else {
             return Ok(CommandType::Pipeline(pipeline));
@@ -170,8 +171,134 @@ fn parse_pipeline_element(pair: pest::iterators::Pair<Rule>) -> Result<PipelineE
         Rule::subshell => {
             Ok(PipelineElement::Subshell(parse_subshell(inner_pair)?))
         }
+        Rule::extended_test => {
+            Ok(PipelineElement::ExtendedTest(parse_extended_test(inner_pair)?))
+        }
         _ => Err(ParseError::UnexpectedRule(inner_pair.as_rule())),
     }
+}
+
+fn parse_extended_test(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // extended_test = { "[[" ~ ws+ ~ cond_expr ~ ws+ ~ "]]" }
+    let inner = pair.into_inner().next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::extended_test))?;
+    parse_cond_expr(inner)
+}
+
+fn parse_cond_expr(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_expr = { cond_or }
+    let inner = pair.into_inner().next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_expr))?;
+    parse_cond_or(inner)
+}
+
+fn parse_cond_or(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_or = { cond_and ~ (ws* ~ "||" ~ ws* ~ cond_and)* }
+    let mut inner = pair.into_inner();
+
+    let first = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_or))?;
+    let mut result = parse_cond_and(first)?;
+
+    while let Some(next) = inner.next() {
+        let right = parse_cond_and(next)?;
+        result = CondExpr::Or(Box::new(result), Box::new(right));
+    }
+
+    Ok(result)
+}
+
+fn parse_cond_and(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_and = { cond_not ~ (ws* ~ "&&" ~ ws* ~ cond_not)* }
+    let mut inner = pair.into_inner();
+
+    let first = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_and))?;
+    let mut result = parse_cond_not(first)?;
+
+    while let Some(next) = inner.next() {
+        let right = parse_cond_not(next)?;
+        result = CondExpr::And(Box::new(result), Box::new(right));
+    }
+
+    Ok(result)
+}
+
+fn parse_cond_not(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_not = { ("!" ~ ws*)? ~ cond_primary }
+    let text = pair.as_str().trim();
+    let is_negated = text.starts_with('!');
+
+    let inner = pair.into_inner();
+    // Find the cond_primary
+    for child in inner {
+        if child.as_rule() == Rule::cond_primary {
+            let expr = parse_cond_primary(child)?;
+            return if is_negated {
+                Ok(CondExpr::Not(Box::new(expr)))
+            } else {
+                Ok(expr)
+            };
+        }
+    }
+
+    Err(ParseError::UnexpectedRule(Rule::cond_not))
+}
+
+fn parse_cond_primary(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_primary = {
+    //     "(" ~ ws* ~ cond_expr ~ ws* ~ ")"  // Grouping
+    //     | cond_unary                       // -z, -n, -f, -d, etc.
+    //     | cond_binary                      // string comparisons, regex
+    //     | word                             // Single word (true if non-empty)
+    // }
+    let inner = pair.into_inner().next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_primary))?;
+
+    match inner.as_rule() {
+        Rule::cond_expr => parse_cond_expr(inner),
+        Rule::cond_unary => parse_cond_unary(inner),
+        Rule::cond_binary => parse_cond_binary(inner),
+        Rule::word => Ok(CondExpr::Word(parse_word(inner)?)),
+        _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
+    }
+}
+
+fn parse_cond_unary(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_unary = { cond_unary_op ~ ws+ ~ word }
+    let mut inner = pair.into_inner();
+
+    let op = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_unary))?
+        .as_str()
+        .to_string();
+    let operand = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_unary))?;
+
+    Ok(CondExpr::Unary {
+        op,
+        operand: parse_word(operand)?,
+    })
+}
+
+fn parse_cond_binary(pair: pest::iterators::Pair<Rule>) -> Result<CondExpr, ParseError> {
+    // cond_binary = { word ~ ws+ ~ cond_binary_op ~ ws+ ~ word }
+    let mut inner = pair.into_inner();
+
+    let left = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_binary))?;
+    let op = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_binary))?
+        .as_str()
+        .to_string();
+    let right = inner.next()
+        .ok_or_else(|| ParseError::UnexpectedRule(Rule::cond_binary))?;
+
+    Ok(CondExpr::Binary {
+        left: parse_word(left)?,
+        op,
+        right: parse_word(right)?,
+    })
 }
 
 fn parse_simple_command(pair: pest::iterators::Pair<Rule>) -> Result<SimpleCommand, ParseError> {

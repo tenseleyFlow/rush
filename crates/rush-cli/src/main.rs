@@ -377,6 +377,10 @@ fn execute_complete_command(
             execute_subshell(subshell, context)
                 .map_err(|e| e.to_string())?
         }
+        CommandType::ExtendedTest(cond) => {
+            rush_executor::control_flow::execute_extended_test(cond, context)
+                .map_err(|e| e.to_string())?
+        }
     };
 
     // Check if the job was stopped (Ctrl-Z)
@@ -436,6 +440,9 @@ fn build_command_string(cmd: &rush_parser::ast::CommandType, context: &mut Conte
                         }
                         rush_parser::ast::PipelineElement::Subshell(_) => {
                             Some("(subshell)".to_string())
+                        }
+                        rush_parser::ast::PipelineElement::ExtendedTest(_) => {
+                            Some("[[ test ]]".to_string())
                         }
                     }
                 })

@@ -38,8 +38,8 @@ and_or_op = { "&&" | "||" }
 // Pipeline: commands or subshells connected by pipes
 pipeline = { pipeline_element ~ (ws* ~ "|" ~ ws* ~ pipeline_element)* }
 
-// An element in a pipeline can be a simple command or a subshell
-pipeline_element = { subshell | simple_command }
+// An element in a pipeline can be a simple command, subshell, or extended test
+pipeline_element = { extended_test | subshell | simple_command }
 
 // Control flow statements
 // Keywords must be followed by whitespace, separator, or EOI (not word characters)
@@ -81,6 +81,44 @@ pattern = { word }
 // Subshell: (commands)
 // Executes commands in a subprocess
 subshell = { "(" ~ separator? ~ command_list ~ separator? ~ ")" }
+
+// Extended test: [[ expression ]]
+// Used for conditional expressions with pattern matching and regex support
+extended_test = { "[[" ~ ws+ ~ cond_expr ~ ws+ ~ "]]" }
+
+// Conditional expression for [[ ]]
+cond_expr = {
+    cond_or
+}
+
+cond_or = { cond_and ~ (ws* ~ "||" ~ ws* ~ cond_and)* }
+cond_and = { cond_not ~ (ws* ~ "&&" ~ ws* ~ cond_not)* }
+cond_not = { ("!" ~ ws*)? ~ cond_primary }
+
+cond_primary = {
+    "(" ~ ws* ~ cond_expr ~ ws* ~ ")"  // Grouping
+    | cond_unary                       // -z, -n, -f, -d, etc.
+    | cond_binary                      // string comparisons, regex
+    | word                             // Single word (true if non-empty)
+}
+
+// Unary test operators
+cond_unary = { cond_unary_op ~ ws+ ~ word }
+cond_unary_op = @{
+    "-z" | "-n"                        // String tests
+    | "-e" | "-f" | "-d" | "-r" | "-w" | "-x" | "-s"  // File tests
+    | "-L" | "-h" | "-p" | "-S" | "-b" | "-c"  // File type tests
+}
+
+// Binary test operators
+cond_binary = { word ~ ws+ ~ cond_binary_op ~ ws+ ~ word }
+cond_binary_op = @{
+    "=~"                               // Regex match (sets BASH_REMATCH)
+    | "==" | "=" | "!="                // String comparison (== supports patterns)
+    | "<" | ">"                        // String ordering
+    | "-eq" | "-ne" | "-lt" | "-le" | "-gt" | "-ge"  // Numeric comparison
+    | "-nt" | "-ot" | "-ef"            // File comparison
+}
 
 // Function definition: function name { body; } or name() { body; }
 function_definition = {

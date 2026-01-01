@@ -61,6 +61,9 @@ pub fn execute_pipeline(
                 return crate::execute_subshell(subshell, context)
                     .map_err(|e| PipelineError::ExecutionError(ExecutionError::CommandNotFound(e)));
             }
+            rush_parser::ast::PipelineElement::ExtendedTest(cond) => {
+                return crate::control_flow::execute_extended_test(cond, context);
+            }
         }
     }
 
@@ -182,6 +185,12 @@ pub fn execute_pipeline(
                         "Subshells in pipelines not supported on this platform".to_string()
                     )));
                 }
+            }
+            rush_parser::ast::PipelineElement::ExtendedTest(_) => {
+                // Extended tests in multi-command pipelines are not supported
+                return Err(PipelineError::ExecutionError(ExecutionError::CommandNotFound(
+                    "Extended tests in pipelines not yet supported".to_string()
+                )));
             }
         }
     }
