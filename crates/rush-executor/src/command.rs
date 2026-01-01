@@ -179,6 +179,7 @@ pub(crate) fn execute_builtin(
         "trap" => Some(builtin_trap(args, context)),
         "set" => Some(builtin_set(args, context)),
         "shopt" => Some(builtin_shopt(args, context)),
+        "export" => Some(builtin_export(args, context)),
         #[cfg(unix)]
         "jobs" => Some(builtin_jobs(context)),
         #[cfg(unix)]
@@ -545,6 +546,73 @@ fn builtin_shopt(args: &[String], context: &mut rush_expand::Context) -> Executi
     } else {
         success_result()
     }
+}
+
+/// export builtin - Mark variables for export to child processes
+fn builtin_export(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    let mut print_format = false;
+    let mut unexport = false;
+    let mut vars_to_process = Vec::new();
+
+    // Parse arguments
+    for arg in args {
+        if arg == "-p" {
+            print_format = true;
+        } else if arg == "-n" {
+            unexport = true;
+        } else if arg.starts_with('-') {
+            eprintln!("export: {}: invalid option", arg);
+            return error_result();
+        } else {
+            vars_to_process.push(arg.clone());
+        }
+    }
+
+    // No arguments or -p: list all exported variables
+    if vars_to_process.is_empty() {
+        let mut exported: Vec<_> = context.exported_vars().iter().collect();
+        exported.sort_by_key(|(name, _)| *name);
+        for (name, value) in exported {
+            if print_format {
+                println!("export {}={}", name, value);
+            } else {
+                println!("export {}={}", name, value);
+            }
+        }
+        return success_result();
+    }
+
+    // Process each variable
+    for var in &vars_to_process {
+        if let Some(eq_pos) = var.find('=') {
+            // VAR=value format
+            let name = &var[..eq_pos];
+            let value = &var[eq_pos + 1..];
+
+            if unexport {
+                eprintln!("export: -n: cannot assign value and unexport");
+                return error_result();
+            }
+
+            context.export_var(name, value);
+        } else {
+            // Just VAR (no value)
+            if unexport {
+                // Remove from exported (but keep in variables)
+                context.unexport_var(var);
+            } else {
+                // Export existing variable
+                if let Some(value) = context.get_var(var).map(|s| s.to_string()) {
+                    context.export_var(var, value);
+                } else {
+                    // Variable doesn't exist, export with empty value
+                    context.export_var(var, "");
+                }
+            }
+        }
+    }
+
+    success_result()
 }
 
 #[cfg(unix)]

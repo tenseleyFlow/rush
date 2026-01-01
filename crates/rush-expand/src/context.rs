@@ -146,6 +146,11 @@ impl Context {
         self.exported.remove(name);
     }
 
+    /// Unexport a variable (remove from exported but keep in variables)
+    pub fn unexport_var(&mut self, name: &str) {
+        self.exported.remove(name);
+    }
+
     /// Update the exit status
     pub fn set_exit_status(&mut self, status: i32) {
         self.last_exit_status = status;
