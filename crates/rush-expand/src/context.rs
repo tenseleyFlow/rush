@@ -5,6 +5,25 @@ use std::rc::Rc;
 #[cfg(unix)]
 use rush_job::JobList;
 
+#[cfg(unix)]
+use nix::unistd::Pid;
+
+/// State for active coproc (coprocess)
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct CoprocState {
+    /// Coproc name (default is "COPROC")
+    pub name: String,
+    /// File descriptor for reading from coproc's stdout
+    pub read_fd: i32,
+    /// File descriptor for writing to coproc's stdin
+    pub write_fd: i32,
+    /// Process ID of the coproc
+    pub pid: Pid,
+    /// Process group ID of the coproc
+    pub pgid: Pid,
+}
+
 /// Callback type for executing command substitution internally
 /// Takes the command string and returns the stdout output
 pub type CommandExecutor = Rc<dyn Fn(&str, &mut Context) -> Result<String, String>>;
@@ -101,6 +120,9 @@ pub struct Context {
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
+    /// Active coproc state (unix only, single coproc at a time)
+    #[cfg(unix)]
+    pub coproc: Option<CoprocState>,
     /// Internal command executor (for command substitution)
     /// If set, command substitution will use this instead of sh -c
     pub command_executor: CommandExecutorWrapper,
@@ -126,6 +148,8 @@ impl Context {
             optind: 1,
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
+            #[cfg(unix)]
+            coproc: None,
             command_executor: CommandExecutorWrapper(None),
         };
 
@@ -157,6 +181,8 @@ impl Context {
             optind: 1,
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
+            #[cfg(unix)]
+            coproc: None,
             command_executor: CommandExecutorWrapper(None),
         }
     }
@@ -375,6 +401,28 @@ impl Context {
     /// Create an indexed array
     pub fn create_indexed_array(&mut self, name: String) {
         self.arrays.insert(name, ArrayType::Indexed(Vec::new()));
+    }
+
+    /// Set coproc file descriptors as array variables
+    /// Creates array with indices 0 (read fd) and 1 (write fd)
+    #[cfg(unix)]
+    pub fn set_coproc_vars(&mut self, name: &str, read_fd: i32, write_fd: i32) {
+        let fds = vec![read_fd.to_string(), write_fd.to_string()];
+        self.arrays.insert(name.to_string(), ArrayType::Indexed(fds));
+    }
+
+    /// Clear coproc variables and close file descriptors
+    #[cfg(unix)]
+    pub fn clear_coproc(&mut self) {
+        if let Some(coproc_state) = self.coproc.take() {
+            // Close file descriptors
+            unsafe {
+                nix::libc::close(coproc_state.read_fd);
+                nix::libc::close(coproc_state.write_fd);
+            }
+            // Remove array variable
+            self.arrays.remove(&coproc_state.name);
+        }
     }
 }
 

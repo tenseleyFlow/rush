@@ -216,8 +216,10 @@ pub(crate) fn execute_builtin(
         "fg" => Some(builtin_fg(args, context)),
         #[cfg(unix)]
         "bg" => Some(builtin_bg(args, context)),
+        #[cfg(unix)]
+        "coproc" => Some(builtin_coproc(args, context)),
         #[cfg(not(unix))]
-        "jobs" | "fg" | "bg" => {
+        "jobs" | "fg" | "bg" | "coproc" => {
             eprintln!("{}: job control not supported on this platform", command);
             Some(error_result())
         }
@@ -2046,6 +2048,170 @@ fn builtin_bg(args: &[String], context: &mut rush_expand::Context) -> ExecutionR
     println!("[{}]  {}", job.id, job.command);
 
     success_result()
+}
+
+#[cfg(unix)]
+fn builtin_coproc(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
+    use nix::unistd::{fork, pipe, close, dup2, setpgid, ForkResult};
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::IntoRawFd;
+
+    // Parse arguments: coproc [NAME] command [args...]
+    let (name, command_args) = if args.is_empty() {
+        eprintln!("coproc: usage: coproc [NAME] command [args...]");
+        return error_result();
+    } else if args.len() == 1 {
+        // Single arg: could be just command with default name
+        ("COPROC".to_string(), args.to_vec())
+    } else {
+        // Check if first arg is a valid name (starts with letter or underscore)
+        let first = &args[0];
+        if first.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+            && first.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && args.len() > 1
+        {
+            // First arg is name, rest is command
+            (first.clone(), args[1..].to_vec())
+        } else {
+            // First arg is part of command, use default name
+            ("COPROC".to_string(), args.to_vec())
+        }
+    };
+
+    // Close any existing coproc
+    context.clear_coproc();
+
+    // Create two pipes: one for reading from coproc stdout, one for writing to coproc stdin
+    let (read_fd_parent, write_fd_child) = match pipe() {
+        Ok((r, w)) => (r.into_raw_fd(), w.into_raw_fd()),
+        Err(e) => {
+            eprintln!("coproc: failed to create pipe: {}", e);
+            return error_result();
+        }
+    };
+
+    let (read_fd_child, write_fd_parent) = match pipe() {
+        Ok((r, w)) => (r.into_raw_fd(), w.into_raw_fd()),
+        Err(e) => {
+            eprintln!("coproc: failed to create pipe: {}", e);
+            // close() is already unsafe, no need for unsafe block
+            close(read_fd_parent).ok();
+            close(write_fd_child).ok();
+            return error_result();
+        }
+    };
+
+    // Fork the child process
+    match unsafe { fork() } {
+        Ok(ForkResult::Child) => {
+            // Child process: set up pipes and exec command
+
+            // Close parent ends of pipes
+            close(read_fd_parent).ok();
+            close(write_fd_parent).ok();
+
+            // Redirect stdin from read_fd_child
+            if let Err(e) = dup2(read_fd_child, 0) {
+                eprintln!("coproc: failed to dup2 stdin: {}", e);
+                std::process::exit(1);
+            }
+            close(read_fd_child).ok();
+
+            // Redirect stdout to write_fd_child
+            if let Err(e) = dup2(write_fd_child, 1) {
+                eprintln!("coproc: failed to dup2 stdout: {}", e);
+                std::process::exit(1);
+            }
+            close(write_fd_child).ok();
+
+            // Find and execute the command
+            let command_name = &command_args[0];
+            let program_path = match find_in_path(command_name) {
+                Some(path) => path,
+                None => {
+                    eprintln!("coproc: {}: command not found", command_name);
+                    std::process::exit(127);
+                }
+            };
+
+            // Build argument list for execvp
+            let program_cstring = match CString::new(program_path.as_os_str().as_bytes()) {
+                Ok(s) => s,
+                Err(_) => std::process::exit(1),
+            };
+
+            let arg_cstrings: Vec<CString> = command_args.iter()
+                .filter_map(|arg| CString::new(arg.as_bytes()).ok())
+                .collect();
+
+            let arg_ptrs: Vec<*const i8> = std::iter::once(program_cstring.as_ptr())
+                .chain(arg_cstrings.iter().map(|s| s.as_ptr()))
+                .chain(std::iter::once(std::ptr::null()))
+                .collect();
+
+            // Exec the command
+            unsafe {
+                nix::libc::execvp(program_cstring.as_ptr(), arg_ptrs.as_ptr());
+            }
+
+            // If execvp returns, it failed
+            eprintln!("coproc: failed to exec {}", command_name);
+            std::process::exit(127);
+        }
+        Ok(ForkResult::Parent { child }) => {
+            // Parent process: close child ends of pipes and set up coproc state
+
+            // Close child ends
+            close(read_fd_child).ok();
+            close(write_fd_child).ok();
+
+            let pid = child;
+            let pgid = pid; // Use PID as PGID (process becomes group leader)
+
+            // Put child in its own process group
+            if let Err(e) = setpgid(pid, pgid) {
+                eprintln!("coproc: warning: failed to set process group: {}", e);
+            }
+
+            // Build command string for display
+            let command_string = command_args.join(" ");
+
+            // Store coproc state
+            context.coproc = Some(rush_expand::CoprocState {
+                name: name.clone(),
+                read_fd: read_fd_parent,
+                write_fd: write_fd_parent,
+                pid,
+                pgid,
+            });
+
+            // Set array variables: NAME[0] = read_fd, NAME[1] = write_fd
+            context.set_coproc_vars(&name, read_fd_parent, write_fd_parent);
+
+            // Add to job list
+            let job_id = context.job_list.add_job(
+                pgid,
+                command_string.clone(),
+                vec![pid],
+                false, // not foreground
+            );
+
+            // Print job notification
+            println!("[{}] {}", job_id, pid);
+
+            success_result()
+        }
+        Err(e) => {
+            eprintln!("coproc: fork failed: {}", e);
+            // Clean up pipes
+            close(read_fd_parent).ok();
+            close(write_fd_parent).ok();
+            close(read_fd_child).ok();
+            close(write_fd_child).ok();
+            error_result()
+        }
+    }
 }
 
 /// source/. builtin - Execute commands from a file in the current shell context

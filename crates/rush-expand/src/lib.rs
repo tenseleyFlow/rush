@@ -13,5 +13,7 @@ pub use brace::expand_brace;
 pub use brace_parse::detect_brace_patterns;
 pub use command_subst::{execute_command_substitution, CommandSubstError};
 pub use context::{CommandExecutorWrapper, Context, ShellOptions};
+#[cfg(unix)]
+pub use context::CoprocState;
 pub use expand::{expand_word, expand_word_with_braces, expand_words, ExpansionError};
 pub use glob::{expand_glob, GlobOptions};
