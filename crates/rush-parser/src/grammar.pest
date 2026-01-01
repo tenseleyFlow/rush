@@ -112,12 +112,14 @@ array_index = { "[" ~ array_subscript ~ "]" }
 array_subscript = @{ (ASCII_DIGIT+ | var_name) }
 var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
-// Redirections: <file, >file, >>file, 2>file, 2>&1, &>file, <<EOF, <<<string
+// Redirections: <file, >file, >>file, 2>file, 2>&1, &>file, <<EOF, <<<string, <(cmd), >(cmd)
 redirect = {
     redirect_stderr_to_stdout  // Must come before others to match 2>&1
     | redirect_all_output       // &>file or &>>file
     | redirect_herestring       // <<<string (must come before heredoc)
     | redirect_heredoc          // <<EOF or <<-EOF
+    | process_subst_input       // <(command) - must come before redirect_input
+    | process_subst_output      // >(command) - must come before redirect_output
     | redirect_output_append    // >>file
     | redirect_output           // >file or N>file
     | redirect_input            // <file
@@ -137,6 +139,11 @@ bare_delimiter = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 // Herestring: <<<string
 redirect_herestring = { "<<<" ~ ws* ~ word }
+
+// Process substitution: <(command) and >(command)
+// Creates named pipes (FIFOs) that can be used as file arguments
+process_subst_input = { "<(" ~ ws* ~ command_subst_content ~ ")" }
+process_subst_output = { ">(" ~ ws* ~ command_subst_content ~ ")" }
 
 fd_number = @{ ASCII_DIGIT+ }
 

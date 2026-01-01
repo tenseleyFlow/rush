@@ -739,6 +739,24 @@ fn parse_redirect(pair: pest::iterators::Pair<Rule>) -> Result<Redirect, ParseEr
                 content: parse_word(word)?,
             })
         }
+        Rule::process_subst_input => {
+            // Parse process substitution: <(command)
+            // Reconstruct the command content (handles nested parens)
+            let command = inner.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>();
+
+            Ok(Redirect::ProcessSubstInput { command })
+        }
+        Rule::process_subst_output => {
+            // Parse process substitution: >(command)
+            // Reconstruct the command content (handles nested parens)
+            let command = inner.into_inner()
+                .map(|p| reconstruct_command_subst_content(p))
+                .collect::<String>();
+
+            Ok(Redirect::ProcessSubstOutput { command })
+        }
         _ => Err(ParseError::UnexpectedRule(inner.as_rule())),
     }
 }

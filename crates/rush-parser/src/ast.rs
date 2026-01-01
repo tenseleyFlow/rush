@@ -85,6 +85,12 @@ pub enum Redirect {
     },
     /// Here-string: <<<string
     Herestring { content: Word },
+    /// Process substitution input: <(command)
+    /// Creates a FIFO that reads from the command's stdout
+    ProcessSubstInput { command: String },
+    /// Process substitution output: >(command)
+    /// Creates a FIFO that writes to the command's stdin
+    ProcessSubstOutput { command: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

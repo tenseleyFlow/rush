@@ -201,5 +201,23 @@ fn apply_single_redirect(
             cmd.stdin(Stdio::piped());
             Ok(Some(input))
         }
+
+        Redirect::ProcessSubstInput { command } => {
+            // TODO: Implement process substitution <(command)
+            // Will create FIFO, fork process, connect stdout to FIFO
+            Err(RedirectError::FileOpenError(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("Process substitution not yet implemented: <({})", command),
+            )))
+        }
+
+        Redirect::ProcessSubstOutput { command } => {
+            // TODO: Implement process substitution >(command)
+            // Will create FIFO, fork process, connect stdin to FIFO
+            Err(RedirectError::FileOpenError(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("Process substitution not yet implemented: >({})", command),
+            )))
+        }
     }
 }
