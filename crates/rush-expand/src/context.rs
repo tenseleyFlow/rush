@@ -1,8 +1,25 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::rc::Rc;
 
 #[cfg(unix)]
 use rush_job::JobList;
+
+/// Callback type for executing command substitution internally
+/// Takes the command string and returns the stdout output
+pub type CommandExecutor = Rc<dyn Fn(&str, &mut Context) -> Result<String, String>>;
+
+/// Wrapper for CommandExecutor that implements Debug
+pub struct CommandExecutorWrapper(pub Option<CommandExecutor>);
+
+impl std::fmt::Debug for CommandExecutorWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(_) => write!(f, "CommandExecutor(Some)"),
+            None => write!(f, "CommandExecutor(None)"),
+        }
+    }
+}
 
 /// Shell options that can be set with the 'set' builtin
 #[derive(Debug, Clone)]
@@ -47,6 +64,9 @@ pub struct Context {
     variables: HashMap<String, String>,
     /// Variables that should be exported to child processes
     exported: HashMap<String, String>,
+    /// Local variable scopes (stack of scopes, innermost first)
+    /// Each scope contains variables declared with 'local' in that function
+    local_scopes: Vec<HashMap<String, String>>,
     /// Exit status of last command
     pub last_exit_status: i32,
     /// Shell functions (name -> body)
@@ -61,9 +81,18 @@ pub struct Context {
     pub options: ShellOptions,
     /// Read-only variables
     readonly_vars: HashSet<String>,
+    /// Positional parameters ($1, $2, $3, ...)
+    pub positional_params: Vec<String>,
+    /// Command hash table (command name -> full path)
+    pub command_hash: HashMap<String, String>,
+    /// OPTIND for getopts (current option index)
+    pub optind: usize,
     /// Job list for job control (unix only)
     #[cfg(unix)]
     pub job_list: JobList,
+    /// Internal command executor (for command substitution)
+    /// If set, command substitution will use this instead of sh -c
+    pub command_executor: CommandExecutorWrapper,
 }
 
 impl Context {
@@ -72,6 +101,7 @@ impl Context {
         let mut context = Self {
             variables: HashMap::new(),
             exported: HashMap::new(),
+            local_scopes: Vec::new(),
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
@@ -79,8 +109,12 @@ impl Context {
             traps: HashMap::new(),
             options: ShellOptions::default(),
             readonly_vars: HashSet::new(),
+            positional_params: Vec::new(),
+            command_hash: HashMap::new(),
+            optind: 1,
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
+            command_executor: CommandExecutorWrapper(None),
         };
 
         // Initialize with environment variables
@@ -97,6 +131,7 @@ impl Context {
         Self {
             variables: HashMap::new(),
             exported: HashMap::new(),
+            local_scopes: Vec::new(),
             last_exit_status: 0,
             functions: HashMap::new(),
             arrays: HashMap::new(),
@@ -104,8 +139,12 @@ impl Context {
             traps: HashMap::new(),
             options: ShellOptions::default(),
             readonly_vars: HashSet::new(),
+            positional_params: Vec::new(),
+            command_hash: HashMap::new(),
+            optind: 1,
             #[cfg(unix)]
             job_list: JobList::new(nix::unistd::getpgrp()),
+            command_executor: CommandExecutorWrapper(None),
         }
     }
 
@@ -125,7 +164,16 @@ impl Context {
     }
 
     /// Get a variable value
+    /// Searches local scopes first (innermost to outermost), then global variables
     pub fn get_var(&self, name: &str) -> Option<&str> {
+        // Search local scopes from innermost (most recent function) to outermost
+        for scope in self.local_scopes.iter().rev() {
+            if let Some(value) = scope.get(name) {
+                return Some(value.as_str());
+            }
+        }
+
+        // Not found in local scopes, check global variables
         self.variables.get(name).map(|s| s.as_str())
     }
 
@@ -176,6 +224,41 @@ impl Context {
     /// Get all readonly variables
     pub fn readonly_vars(&self) -> &HashSet<String> {
         &self.readonly_vars
+    }
+
+    /// Push a new local scope (when entering a function)
+    pub fn push_scope(&mut self) {
+        self.local_scopes.push(HashMap::new());
+    }
+
+    /// Pop the current local scope (when exiting a function)
+    /// Returns the popped scope
+    pub fn pop_scope(&mut self) -> Option<HashMap<String, String>> {
+        self.local_scopes.pop()
+    }
+
+    /// Set a local variable in the current function scope
+    /// If not in a function (no scopes), sets as global variable
+    /// Returns Ok(()) on success, Err with variable name if readonly
+    pub fn set_local_var(&mut self, name: impl Into<String>, value: impl Into<String>) -> Result<(), String> {
+        let name = name.into();
+
+        // Check if readonly
+        if self.is_readonly(&name) {
+            return Err(name);
+        }
+
+        let value = value.into();
+
+        // If we're in a function (have local scopes), set in current scope
+        if let Some(current_scope) = self.local_scopes.last_mut() {
+            current_scope.insert(name, value);
+        } else {
+            // Not in a function, set as global
+            self.variables.insert(name, value);
+        }
+
+        Ok(())
     }
 
     /// Update the exit status

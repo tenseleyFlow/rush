@@ -1,5 +1,4 @@
 use reedline::{DefaultHinter, DefaultPrompt, FileBackedHistory, Reedline, Signal};
-use rush_expand::Context;
 use rush_interactive::{RushCompleter, RushHighlighter};
 use std::process::ExitCode;
 
@@ -30,7 +29,7 @@ pub fn run_interactive() -> ExitCode {
     }
 
     let prompt = DefaultPrompt::default();
-    let mut context = Context::new();
+    let mut context = crate::create_context();
 
     loop {
         // Check for completed/stopped background jobs before each prompt

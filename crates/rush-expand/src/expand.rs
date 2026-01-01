@@ -19,7 +19,7 @@ pub enum ExpansionError {
 }
 
 /// Expand a Word into one or more Strings (due to brace expansion)
-pub fn expand_word_with_braces(word: &Word, context: &Context) -> Result<Vec<String>, ExpansionError> {
+pub fn expand_word_with_braces(word: &Word, context: &mut Context) -> Result<Vec<String>, ExpansionError> {
     // Find if there's a brace expansion
     let brace_index = word.parts.iter().position(|p| matches!(p, WordPart::BraceExpansion(_)));
 
@@ -53,7 +53,7 @@ pub fn expand_word_with_braces(word: &Word, context: &Context) -> Result<Vec<Str
 }
 
 /// Expand a Word into a String by resolving all expansions (no brace expansion)
-fn expand_word_simple(word: &Word, context: &Context) -> Result<String, ExpansionError> {
+fn expand_word_simple(word: &Word, context: &mut Context) -> Result<String, ExpansionError> {
     let mut result = String::new();
 
     for part in &word.parts {
@@ -66,7 +66,7 @@ fn expand_word_simple(word: &Word, context: &Context) -> Result<String, Expansio
                 result.push_str(&expanded);
             }
             WordPart::CommandSubstitution(cmd) => {
-                let output = execute_command_substitution(cmd)?;
+                let output = execute_command_substitution(cmd, context)?;
                 result.push_str(&output);
             }
             WordPart::ArithmeticExpansion(expr) => {
@@ -95,15 +95,40 @@ fn expand_word_simple(word: &Word, context: &Context) -> Result<String, Expansio
 
 /// Expand a Word into a String by resolving all expansions
 /// (Kept for backward compatibility - delegates to new function)
-pub fn expand_word(word: &Word, context: &Context) -> Result<String, ExpansionError> {
+pub fn expand_word(word: &Word, context: &mut Context) -> Result<String, ExpansionError> {
     let results = expand_word_with_braces(word, context)?;
     Ok(results.join(" "))
 }
 
 /// Expand a variable reference
-fn expand_var(var_exp: &VarExpansion, context: &Context) -> Result<String, ExpansionError> {
+fn expand_var(var_exp: &VarExpansion, context: &mut Context) -> Result<String, ExpansionError> {
     match var_exp {
         VarExpansion::Simple(name) | VarExpansion::Braced(name) => {
+            // Handle special variables
+            match name.as_str() {
+                "?" => return Ok(context.last_exit_status.to_string()),
+                "#" => return Ok(context.positional_params.len().to_string()),
+                "@" | "*" => {
+                    // $@ and $* expand to all positional parameters
+                    // They differ in quoting behavior, but for simple expansion they're the same
+                    return Ok(context.positional_params.join(" "));
+                }
+                "0" => {
+                    // $0 is the shell name or script name
+                    return Ok(context.get_var("0").unwrap_or("rush").to_string());
+                }
+                _ => {
+                    // Check if it's a positional parameter like $1, $2, etc.
+                    if let Ok(index) = name.parse::<usize>() {
+                        if index > 0 && index <= context.positional_params.len() {
+                            return Ok(context.positional_params[index - 1].clone());
+                        } else {
+                            return Ok(String::new());
+                        }
+                    }
+                }
+            }
+
             // Simple expansion: $VAR or ${VAR}
             Ok(context.get_var(name).unwrap_or("").to_string())
         }
@@ -363,7 +388,7 @@ fn lowercase_first(value: &str) -> String {
 
 /// Expand multiple words (e.g., command arguments)
 /// Each word may expand into multiple words due to brace expansion and glob expansion
-pub fn expand_words(words: &[Word], context: &Context) -> Result<Vec<String>, ExpansionError> {
+pub fn expand_words(words: &[Word], context: &mut Context) -> Result<Vec<String>, ExpansionError> {
     let mut results = Vec::new();
     for word in words {
         // First, detect and parse any brace patterns in literals
