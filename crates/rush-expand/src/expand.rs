@@ -14,6 +14,9 @@ pub enum ExpansionError {
     #[error("Arithmetic error: {0}")]
     ArithmeticError(#[from] ArithmeticError),
 
+    #[error("{0}")]
+    ParameterError(String),
+
     #[error("Expansion error: {0}")]
     Other(String),
 }
@@ -59,6 +62,7 @@ fn expand_word_simple(word: &Word, context: &mut Context) -> Result<String, Expa
     for part in &word.parts {
         match part {
             WordPart::Literal(s) => {
+                // Keep backslash escapes - they'll be stripped during glob expansion
                 result.push_str(s);
             }
             WordPart::VarExpansion(var_exp) => {
@@ -139,6 +143,88 @@ fn expand_var(var_exp: &VarExpansion, context: &mut Context) -> Result<String, E
                 _ => {
                     // Expand the default value recursively
                     expand_word(default, context)
+                }
+            }
+        }
+        VarExpansion::AssignDefault { name, default } => {
+            // ${VAR:=default} - assign default if VAR is unset or empty
+            match context.get_var(name) {
+                Some(value) if !value.is_empty() => Ok(value.to_string()),
+                _ => {
+                    // Expand the default and assign it to the variable
+                    let expanded = expand_word(default, context)?;
+                    let _ = context.set_var(name, &expanded);
+                    Ok(expanded)
+                }
+            }
+        }
+        VarExpansion::UseIfSet { name, alternate } => {
+            // ${VAR:+alternate} - use alternate if VAR is set and non-empty
+            match context.get_var(name) {
+                Some(value) if !value.is_empty() => {
+                    // VAR is set and non-empty, use the alternate
+                    expand_word(alternate, context)
+                }
+                _ => {
+                    // VAR is unset or empty, return empty string
+                    Ok(String::new())
+                }
+            }
+        }
+        VarExpansion::ErrorIfUnset { name, message } => {
+            // ${VAR:?message} - error if VAR is unset or empty
+            match context.get_var(name) {
+                Some(value) if !value.is_empty() => Ok(value.to_string()),
+                _ => {
+                    // Expand the message for the error
+                    let msg = expand_word(message, context)?;
+                    let err_msg = if msg.is_empty() {
+                        format!("{}: parameter null or not set", name)
+                    } else {
+                        format!("{}: {}", name, msg)
+                    };
+                    Err(ExpansionError::ParameterError(err_msg))
+                }
+            }
+        }
+        // Non-colon variants - only check if unset, empty is OK
+        VarExpansion::WithDefaultUnsetOnly { name, default } => {
+            // ${VAR-default} - use default only if VAR is unset
+            match context.get_var(name) {
+                Some(value) => Ok(value.to_string()), // Empty is fine
+                None => expand_word(default, context),
+            }
+        }
+        VarExpansion::AssignDefaultUnsetOnly { name, default } => {
+            // ${VAR=default} - assign default only if VAR is unset
+            match context.get_var(name) {
+                Some(value) => Ok(value.to_string()), // Empty is fine
+                None => {
+                    let expanded = expand_word(default, context)?;
+                    let _ = context.set_var(name, &expanded);
+                    Ok(expanded)
+                }
+            }
+        }
+        VarExpansion::UseIfSetOnly { name, alternate } => {
+            // ${VAR+alternate} - use alternate if VAR is set (even if empty)
+            match context.get_var(name) {
+                Some(_) => expand_word(alternate, context), // Set, even if empty
+                None => Ok(String::new()),
+            }
+        }
+        VarExpansion::ErrorIfUnsetOnly { name, message } => {
+            // ${VAR?message} - error only if VAR is unset
+            match context.get_var(name) {
+                Some(value) => Ok(value.to_string()), // Empty is fine
+                None => {
+                    let msg = expand_word(message, context)?;
+                    let err_msg = if msg.is_empty() {
+                        format!("{}: parameter not set", name)
+                    } else {
+                        format!("{}: {}", name, msg)
+                    };
+                    Err(ExpansionError::ParameterError(err_msg))
                 }
             }
         }

@@ -57,8 +57,8 @@ pub fn expand_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<String>, 
     // Check if pattern contains glob metacharacters
     // Skip this check for extglob patterns as they need processing even without metacharacters
     if !is_extglob && !has_glob_chars(pattern) {
-        // No glob characters - return as-is
-        return Ok(vec![pattern.to_string()]);
+        // No unescaped glob characters - strip backslash escapes and return as literal
+        return Ok(vec![strip_backslash_escapes(pattern)]);
     }
 
     // Parse and convert extended glob patterns (if extglob is enabled)
@@ -132,11 +132,49 @@ fn expand_standard_glob(pattern: &str, options: &GlobOptions) -> Result<Vec<Stri
     }
 }
 
-/// Check if a pattern contains glob metacharacters or extended glob patterns
+/// Check if a pattern contains unescaped glob metacharacters or extended glob patterns
+/// Backslash-escaped characters (\*, \?, etc.) are not counted as glob chars
 fn has_glob_chars(s: &str) -> bool {
-    s.contains('*') || s.contains('?') || s.contains('[') || s.contains(']')
-        || s.contains("!(") || s.contains("?(") || s.contains("*(")
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            // Skip the next character (it's escaped)
+            chars.next();
+            continue;
+        }
+        if ch == '*' || ch == '?' || ch == '[' || ch == ']' {
+            return true;
+        }
+    }
+    // Check for extended glob patterns (they can't be easily escaped)
+    s.contains("!(") || s.contains("?(") || s.contains("*(")
         || s.contains("+(") || s.contains("@(")
+}
+
+/// Strip backslash escapes from a string (for returning literal patterns)
+/// Only strips backslashes that escape glob metacharacters (* ? [ ])
+/// Preserves other backslashes for escape sequences like \n \t
+fn strip_backslash_escapes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                // Only strip backslash if it's escaping a glob metacharacter
+                if next == '*' || next == '?' || next == '[' || next == ']' || next == '\\' {
+                    result.push(chars.next().unwrap());
+                } else {
+                    // Preserve the backslash for other escape sequences
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 /// Parse extended glob patterns and convert appropriately

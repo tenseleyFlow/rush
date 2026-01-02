@@ -257,8 +257,22 @@ pub enum VarExpansion {
     Simple(String),
     /// Braced: ${VAR}
     Braced(String),
-    /// With default: ${VAR:-default}
+    /// With default (colon): ${VAR:-default} - use default if unset OR empty
     WithDefault { name: String, default: Box<Word> },
+    /// With default (no colon): ${VAR-default} - use default only if unset
+    WithDefaultUnsetOnly { name: String, default: Box<Word> },
+    /// Assign default (colon): ${VAR:=default} - assign if unset OR empty
+    AssignDefault { name: String, default: Box<Word> },
+    /// Assign default (no colon): ${VAR=default} - assign only if unset
+    AssignDefaultUnsetOnly { name: String, default: Box<Word> },
+    /// Use alternate if set (colon): ${VAR:+alternate} - use if set AND non-empty
+    UseIfSet { name: String, alternate: Box<Word> },
+    /// Use alternate if set (no colon): ${VAR+alternate} - use if set (even if empty)
+    UseIfSetOnly { name: String, alternate: Box<Word> },
+    /// Error if unset (colon): ${VAR:?message} - error if unset OR empty
+    ErrorIfUnset { name: String, message: Box<Word> },
+    /// Error if unset (no colon): ${VAR?message} - error only if unset
+    ErrorIfUnsetOnly { name: String, message: Box<Word> },
     /// Length: ${#VAR}
     Length(String),
     /// Remove shortest prefix: ${VAR#pattern}

@@ -411,6 +411,31 @@ fn reconstruct_command_subst_content(pair: pest::iterators::Pair<Rule>) -> Strin
     }
 }
 
+/// Unescape backticks in backtick command substitution content
+/// Converts \` to ` for nested backtick handling: `echo \`inner\`` -> echo `inner`
+fn unescape_backticks(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                if next == '`' {
+                    // Unescape backtick
+                    result.push(chars.next().unwrap());
+                } else {
+                    // Keep other escape sequences
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, ParseError> {
     let inner = pair.into_inner().next().ok_or_else(|| {
         ParseError::UnexpectedRule(Rule::word_part)
@@ -439,6 +464,15 @@ fn parse_word_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<WordPart>, P
             let content = inner.into_inner()
                 .map(|p| reconstruct_command_subst_content(p))
                 .collect::<String>();
+            Ok(vec![WordPart::CommandSubstitution(content)])
+        }
+        Rule::backtick_substitution => {
+            // Extract command from backticks: `command`
+            // Handle escaped backticks for nesting: `echo \`inner\`` -> echo `inner`
+            let raw_content = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::backtick_substitution))?
+                .as_str();
+            let content = unescape_backticks(raw_content);
             Ok(vec![WordPart::CommandSubstitution(content)])
         }
         Rule::quoted_string => {
@@ -580,6 +614,84 @@ fn parse_var_modifier(var_name: &str, pair: pest::iterators::Pair<Rule>) -> Resu
         return Ok(VarExpansion::WithDefault {
             name: var_name.to_string(),
             default: Box::new(default),
+        });
+    }
+
+    if modifier_text.starts_with(":=") {
+        // ${VAR:=default} - assign default if unset/empty
+        let default_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let default = parse_word(default_word)?;
+        return Ok(VarExpansion::AssignDefault {
+            name: var_name.to_string(),
+            default: Box::new(default),
+        });
+    }
+
+    if modifier_text.starts_with(":+") {
+        // ${VAR:+alternate} - use alternate if set and non-empty
+        let alternate_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let alternate = parse_word(alternate_word)?;
+        return Ok(VarExpansion::UseIfSet {
+            name: var_name.to_string(),
+            alternate: Box::new(alternate),
+        });
+    }
+
+    if modifier_text.starts_with(":?") {
+        // ${VAR:?message} - error if unset/empty
+        let message_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let message = parse_word(message_word)?;
+        return Ok(VarExpansion::ErrorIfUnset {
+            name: var_name.to_string(),
+            message: Box::new(message),
+        });
+    }
+
+    // Non-colon variants (check unset only, not empty)
+    if modifier_text.starts_with('-') && !modifier_text.starts_with("--") {
+        // ${VAR-default} - use default only if unset
+        let default_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let default = parse_word(default_word)?;
+        return Ok(VarExpansion::WithDefaultUnsetOnly {
+            name: var_name.to_string(),
+            default: Box::new(default),
+        });
+    }
+
+    if modifier_text.starts_with('=') && !modifier_text.starts_with("==") {
+        // ${VAR=default} - assign only if unset
+        let default_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let default = parse_word(default_word)?;
+        return Ok(VarExpansion::AssignDefaultUnsetOnly {
+            name: var_name.to_string(),
+            default: Box::new(default),
+        });
+    }
+
+    if modifier_text.starts_with('+') {
+        // ${VAR+alternate} - use if set (even if empty)
+        let alternate_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let alternate = parse_word(alternate_word)?;
+        return Ok(VarExpansion::UseIfSetOnly {
+            name: var_name.to_string(),
+            alternate: Box::new(alternate),
+        });
+    }
+
+    if modifier_text.starts_with('?') {
+        // ${VAR?message} - error only if unset
+        let message_word = pair.into_inner().next()
+            .ok_or_else(|| ParseError::UnexpectedRule(Rule::var_modifier))?;
+        let message = parse_word(message_word)?;
+        return Ok(VarExpansion::ErrorIfUnsetOnly {
+            name: var_name.to_string(),
+            message: Box::new(message),
         });
     }
 
@@ -755,6 +867,15 @@ fn parse_double_quoted_part(pair: pest::iterators::Pair<Rule>) -> Result<Vec<Wor
             let content = inner.into_inner()
                 .map(|p| reconstruct_command_subst_content(p))
                 .collect::<String>();
+            Ok(vec![WordPart::CommandSubstitution(content)])
+        }
+        Rule::backtick_substitution => {
+            // Extract command from backticks: `command`
+            // Handle escaped backticks for nesting: `echo \`inner\`` -> echo `inner`
+            let raw_content = inner.into_inner().next()
+                .ok_or_else(|| ParseError::UnexpectedRule(Rule::backtick_substitution))?
+                .as_str();
+            let content = unescape_backticks(raw_content);
             Ok(vec![WordPart::CommandSubstitution(content)])
         }
         _ => Err(ParseError::UnexpectedRule(inner.as_rule())),

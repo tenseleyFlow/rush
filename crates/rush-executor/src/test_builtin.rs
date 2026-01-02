@@ -79,13 +79,22 @@ fn evaluate_unary(op: &str, arg: &str) -> Result<bool, String> {
         "-z" => Ok(arg.is_empty()),
         "-n" => Ok(!arg.is_empty()),
 
-        // File tests
+        // File existence and type tests
         "-e" => Ok(Path::new(arg).exists()),
         "-f" => Ok(Path::new(arg).is_file()),
         "-d" => Ok(Path::new(arg).is_dir()),
+        "-L" | "-h" => Ok(is_symlink(arg)),
+        "-p" => Ok(is_fifo(arg)),
+        "-S" => Ok(is_socket(arg)),
+        "-b" => Ok(is_block_device(arg)),
+        "-c" => Ok(is_char_device(arg)),
+
+        // File permission tests
         "-r" => Ok(is_readable(arg)),
         "-w" => Ok(is_writable(arg)),
         "-x" => Ok(is_executable(arg)),
+
+        // File size test
         "-s" => Ok(file_has_size(arg)),
 
         _ => Err(format!("Unknown unary operator: {}", op)),
@@ -105,6 +114,11 @@ fn evaluate_binary(left: &str, op: &str, right: &str) -> Result<bool, String> {
         "-le" => compare_numbers(left, right, |a, b| a <= b),
         "-gt" => compare_numbers(left, right, |a, b| a > b),
         "-ge" => compare_numbers(left, right, |a, b| a >= b),
+
+        // File comparisons
+        "-nt" => Ok(file_newer_than(left, right)),
+        "-ot" => Ok(file_older_than(left, right)),
+        "-ef" => Ok(same_file(left, right)),
 
         _ => Err(format!("Unknown binary operator: {}", op)),
     }
@@ -155,6 +169,139 @@ fn file_has_size(path: &str) -> bool {
         metadata.len() > 0
     } else {
         false
+    }
+}
+
+#[cfg(unix)]
+fn is_symlink(path: &str) -> bool {
+    // Use symlink_metadata to not follow the symlink
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        metadata.file_type().is_symlink()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+fn is_symlink(path: &str) -> bool {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        metadata.file_type().is_symlink()
+    } else {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn is_fifo(path: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.file_type().is_fifo()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+fn is_fifo(_path: &str) -> bool {
+    false // FIFOs are Unix-specific
+}
+
+#[cfg(unix)]
+fn is_socket(path: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.file_type().is_socket()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+fn is_socket(_path: &str) -> bool {
+    false // Unix sockets are Unix-specific
+}
+
+#[cfg(unix)]
+fn is_block_device(path: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.file_type().is_block_device()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+fn is_block_device(_path: &str) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn is_char_device(path: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    if let Ok(metadata) = fs::metadata(path) {
+        metadata.file_type().is_char_device()
+    } else {
+        false
+    }
+}
+
+#[cfg(not(unix))]
+fn is_char_device(_path: &str) -> bool {
+    false
+}
+
+fn file_newer_than(file1: &str, file2: &str) -> bool {
+    let meta1 = fs::metadata(file1);
+    let meta2 = fs::metadata(file2);
+
+    match (meta1, meta2) {
+        (Ok(m1), Ok(m2)) => {
+            match (m1.modified(), m2.modified()) {
+                (Ok(t1), Ok(t2)) => t1 > t2,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn file_older_than(file1: &str, file2: &str) -> bool {
+    let meta1 = fs::metadata(file1);
+    let meta2 = fs::metadata(file2);
+
+    match (meta1, meta2) {
+        (Ok(m1), Ok(m2)) => {
+            match (m1.modified(), m2.modified()) {
+                (Ok(t1), Ok(t2)) => t1 < t2,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn same_file(file1: &str, file2: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let meta1 = fs::metadata(file1);
+    let meta2 = fs::metadata(file2);
+
+    match (meta1, meta2) {
+        (Ok(m1), Ok(m2)) => m1.dev() == m2.dev() && m1.ino() == m2.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(file1: &str, file2: &str) -> bool {
+    // On non-Unix, we can only do a basic path comparison
+    use std::path::PathBuf;
+    let p1 = PathBuf::from(file1).canonicalize();
+    let p2 = PathBuf::from(file2).canonicalize();
+    match (p1, p2) {
+        (Ok(path1), Ok(path2)) => path1 == path2,
+        _ => false,
     }
 }
 

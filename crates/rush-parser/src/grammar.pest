@@ -149,8 +149,8 @@ simple_command = {
     | redirect ~ (ws* ~ redirect)*
 }
 
-// Variable assignment: NAME=value or NAME[index]=value
-assignment = { var_name ~ array_index? ~ "=" ~ word }
+// Variable assignment: NAME=value or NAME[index]=value or NAME= (empty value)
+assignment = { var_name ~ array_index? ~ "=" ~ word? }
 array_index = { "[" ~ array_subscript ~ "]" }
 array_subscript = @{ (ASCII_DIGIT+ | var_name) }
 var_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -199,10 +199,16 @@ word_part = {
     | var_expansion
     | arithmetic_expansion
     | command_substitution
+    | backtick_substitution
     | array_literal
     | extglob_pattern
     | bare_word_part
 }
+
+// Backtick command substitution: `command`
+// Traditional syntax, supports nested backticks via escaping: `echo \`inner\``
+backtick_substitution = { "`" ~ backtick_content ~ "`" }
+backtick_content = @{ ("\\" ~ ANY | !"`" ~ ANY)* }
 
 // Array literal: (elem1 elem2 elem3)
 array_literal = { "(" ~ ws* ~ (word ~ (ws+ ~ word)*)? ~ ws* ~ ")" }
@@ -240,7 +246,16 @@ special_var = @{
 }
 
 var_modifier = {
+    // Colon variants (check empty AND unset)
     ":-" ~ word  // ${VAR:-default}
+    | ":=" ~ word  // ${VAR:=default} - assign default
+    | ":+" ~ word  // ${VAR:+alternate} - use if set
+    | ":?" ~ word  // ${VAR:?message} - error if unset
+    // Non-colon variants (check unset only) - must come after colon variants
+    | "-" ~ word   // ${VAR-default} - use default only if unset
+    | "=" ~ word   // ${VAR=default} - assign only if unset
+    | "+" ~ word   // ${VAR+alternate} - use if set (even if empty)
+    | "?" ~ word   // ${VAR?message} - error only if unset
     | "##" ~ prefix_suffix_pattern  // ${VAR##pattern} - remove longest prefix
     | "#" ~ prefix_suffix_pattern   // ${VAR#pattern} - remove shortest prefix
     | "%%" ~ prefix_suffix_pattern  // ${VAR%%pattern} - remove longest suffix
@@ -284,10 +299,11 @@ command_subst_text = { (!(")" | "(" | NEWLINE) ~ ANY)+ }
 keyword = { ("if" | "then" | "elif" | "else" | "fi" | "while" | "do" | "done" | "for" | "in" | "case" | "esac") ~ &(ws | NEWLINE | ";" | EOI) }
 
 // Bare word part: literal text (no special characters)
-// Note: We exclude $, |, &, <, >, ;, ), } to handle expansion, pipes, operators, redirects, separators, case patterns, and var expansion
+// Note: We exclude $, |, &, <, >, ;, ), }, ( to handle expansion, pipes, operators, redirects, separators, case patterns, var expansion, and array literals
 // "=" is allowed in words (needed for test command), assignments use explicit var_name pattern
+// "(" is excluded so that array literals like (a b c) can be recognized
 // Keywords are reserved and cannot be used as bare words
-bare_word_part = @{ !keyword ~ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">" | ";" | ")" | "}") ~ ANY)+ }
+bare_word_part = @{ !keyword ~ (!(" " | "\t" | NEWLINE | "#" | "\"" | "'" | "$" | "|" | "&" | "<" | ">" | ";" | ")" | "}" | "(") ~ ANY)+ }
 
 // Quoted strings (single quotes prevent expansion, double quotes allow it)
 quoted_string = { double_quoted | single_quoted }
@@ -299,9 +315,10 @@ double_quoted_part = {
     var_expansion
     | arithmetic_expansion
     | command_substitution
+    | backtick_substitution
     | double_quoted_text
 }
-double_quoted_text = @{ (!"\"" ~ !"$" ~ ANY)+ }
+double_quoted_text = @{ (!"\"" ~ !"$" ~ !"`" ~ ANY)+ }
 
 // Single quotes: no expansion (literal)
 single_quoted = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
