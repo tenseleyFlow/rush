@@ -1,0 +1,516 @@
+#!/bin/sh
+# =====================================
+# POSIX Compliance Test Suite for rush
+# =====================================
+# Tests compliance with POSIX shell specification
+# Uses /bin/sh for comparison (typically dash or bash in POSIX mode)
+
+# Note: Using only POSIX-compliant constructs in this script
+# No bash-isms allowed!
+
+# Colors (POSIX-compliant way)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# Test identification
+TEST_PREFIX="[posix-test]"
+CURRENT_SECTION=""
+TEST_NUM=0
+
+PASSED=0
+FAILED=0
+SKIPPED=0
+FAILED_TESTS_LIST=""
+
+# Get script directory (POSIX way)
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+RUSH_BIN="${RUSH_BIN:-$SCRIPT_DIR/../target/release/rush}"
+
+# Check if fortsh exists
+if [ ! -x "$RUSH_BIN" ]; then
+    printf "${RED}ERROR${NC}: rush binary not found at $RUSH_BIN\n"
+    printf "Please run 'make' first or set RUSH_BIN environment variable\n"
+    exit 1
+fi
+
+# Test result trackers
+pass() {
+    TEST_NUM=$((TEST_NUM + 1))
+    printf "${GREEN}✓ PASS${NC} ${TEST_PREFIX} ${CURRENT_SECTION}.${TEST_NUM}: %s\n" "$1"
+    PASSED=$((PASSED + 1))
+}
+
+fail() {
+    TEST_NUM=$((TEST_NUM + 1))
+    TEST_ID="${TEST_PREFIX} ${CURRENT_SECTION}.${TEST_NUM}"
+    printf "${RED}✗ FAIL${NC} ${TEST_ID}: %s\n" "$1"
+    FAILED_TESTS_LIST="${FAILED_TESTS_LIST}  ${TEST_ID}: $1\n"
+    if [ -n "$2" ]; then
+        printf "  posix:  %s\n" "$2"
+    fi
+    if [ -n "$3" ]; then
+        printf "  rush: %s\n" "$3"
+    fi
+    FAILED=$((FAILED + 1))
+}
+
+skip() {
+    TEST_NUM=$((TEST_NUM + 1))
+    printf "${YELLOW}⊘ SKIP${NC} ${TEST_PREFIX} ${CURRENT_SECTION}.${TEST_NUM}: %s - %s\n" "$1" "$2"
+    SKIPPED=$((SKIPPED + 1))
+}
+
+section() {
+    # Extract section number from header like "3. POSIX PARAMETER EXPANSION"
+    CURRENT_SECTION=$(echo "$1" | grep -oE '^[0-9]+' || echo "0")
+    TEST_NUM=0
+    printf "\n"
+    printf "${BLUE}==========================================\n"
+    printf "%s\n" "$1"
+    printf "==========================================${NC}\n"
+}
+
+# Helper function to run command in both shells and compare
+compare_posix_output() {
+    test_name="$1"
+    command="$2"
+    posix_file="/tmp/posix_comp_$$_posix"
+    fortsh_file="/tmp/posix_comp_$$_fortsh"
+
+    # Run in POSIX shell (sh)
+    bash -c "$command" > "$posix_file" 2>&1 || true
+
+    # Run in rush
+    "$RUSH_BIN" -c "$command" > "$fortsh_file" 2>&1 || true
+
+    # Compare outputs
+    if diff -q "$posix_file" "$fortsh_file" > /dev/null 2>&1; then
+        pass "$test_name"
+    else
+        fail "$test_name" "$(cat "$posix_file")" "$(cat "$fortsh_file")"
+    fi
+
+    rm -f "$posix_file" "$fortsh_file"
+}
+
+# Helper function to compare exit codes
+compare_posix_exit_code() {
+    test_name="$1"
+    command="$2"
+
+    bash -c "$command" > /dev/null 2>&1
+    posix_exit=$?
+
+    "$RUSH_BIN" -c "$command" > /dev/null 2>&1
+    fortsh_exit=$?
+
+    if [ "$posix_exit" -eq "$fortsh_exit" ]; then
+        pass "$test_name"
+    else
+        fail "$test_name" "exit=$posix_exit" "exit=$fortsh_exit"
+    fi
+}
+
+# Cleanup
+cleanup() {
+    rm -f /tmp/posix_comp_$$_* 2>/dev/null
+    rm -f /tmp/posix_test_* 2>/dev/null
+}
+trap cleanup EXIT INT TERM
+
+section "1. POSIX BASIC COMMANDS"
+
+compare_posix_output "echo simple" "echo hello"
+compare_posix_output "echo with args" "echo one two three"
+compare_posix_output "printf basic" "printf 'test\n'"
+compare_posix_output "printf with args" "printf '%s %d\n' hello 42"
+
+section "2. POSIX VARIABLE EXPANSION"
+
+compare_posix_output "simple variable" "VAR=test; echo \$VAR"
+compare_posix_output "variable in quotes" 'VAR=test; echo "$VAR"'
+compare_posix_output "multiple vars" "A=hello; B=world; echo \$A \$B"
+compare_posix_output "undefined variable" "echo \$UNDEFINED_VAR_XYZ_987"
+
+section "3. POSIX PARAMETER EXPANSION"
+
+# Basic parameter expansion
+compare_posix_output "default value" 'echo "${UNSET:-default}"'
+compare_posix_output "assign default" 'UNSET=; echo "${UNSET:=assigned}"; echo $UNSET'
+compare_posix_output "error if unset" 'echo "${VAR:+alternative}"'
+compare_posix_output "string length" 'VAR=hello; echo "${#VAR}"'
+
+# Prefix removal (# and ##)
+compare_posix_output "remove shortest prefix" 'VAR=foo.bar.baz; echo "${VAR#*.}"'
+compare_posix_output "remove longest prefix" 'VAR=foo.bar.baz; echo "${VAR##*.}"'
+compare_posix_output "prefix no match" 'VAR=hello; echo "${VAR#x*}"'
+compare_posix_output "prefix remove slash" 'VAR=/usr/local/bin; echo "${VAR#/*/}"'
+
+# Suffix removal (% and %%)
+compare_posix_output "remove shortest suffix" 'VAR=foo.bar.baz; echo "${VAR%.*}"'
+compare_posix_output "remove longest suffix" 'VAR=foo.bar.baz; echo "${VAR%%.*}"'
+compare_posix_output "suffix no match" 'VAR=hello; echo "${VAR%x*}"'
+compare_posix_output "suffix remove extension" 'VAR=file.tar.gz; echo "${VAR%.gz}"'
+
+section "4. POSIX COMMAND SUBSTITUTION"
+
+compare_posix_output "backtick substitution" 'echo `echo test`'
+compare_posix_output "dollar paren substitution" "echo \$(echo test)"
+compare_posix_output "nested substitution" "echo \$(echo \$(echo nested))"
+
+section "5. POSIX ARITHMETIC"
+
+# POSIX arithmetic uses expr or $(( ))
+compare_posix_output "expr addition" "expr 5 + 3"
+compare_posix_output "expr multiplication" "expr 4 \* 3"
+compare_posix_output "expr division" "expr 15 / 3"
+
+section "6. POSIX REDIRECTION"
+
+compare_posix_output "output redirect" "echo test > /tmp/posix_test_out; cat /tmp/posix_test_out"
+compare_posix_output "append redirect" "echo line1 > /tmp/posix_test_app; echo line2 >> /tmp/posix_test_app; wc -l < /tmp/posix_test_app"
+compare_posix_output "input redirect" "echo input > /tmp/posix_test_in; cat < /tmp/posix_test_in"
+compare_posix_output "stderr redirect" "ls /nonexistent 2>&1 | grep -c 'cannot access\|No such\|not found'"
+
+section "7. POSIX PIPELINES"
+
+compare_posix_output "simple pipe" "echo hello | cat"
+compare_posix_output "two-stage pipe" "echo test | cat | tr t T"
+compare_posix_output "pipe with filter" "printf 'a\nb\nc\n' | grep b"
+
+section "8. POSIX TEST COMMAND"
+
+compare_posix_exit_code "test -f file" "touch /tmp/posix_test_file && test -f /tmp/posix_test_file"
+compare_posix_exit_code "test -d directory" "test -d /tmp"
+compare_posix_exit_code "test -n nonempty" "test -n 'hello'"
+compare_posix_exit_code "test -z empty" "test -z ''"
+compare_posix_exit_code "test string =" "test 'hello' = 'hello'"
+compare_posix_exit_code "test string !=" "test 'hello' != 'world'"
+compare_posix_exit_code "test number -eq" "test 5 -eq 5"
+compare_posix_exit_code "test number -ne" "test 5 -ne 3"
+compare_posix_exit_code "test number -gt" "test 5 -gt 3"
+compare_posix_exit_code "test number -ge" "test 5 -ge 5"
+compare_posix_exit_code "test number -lt" "test 3 -lt 5"
+compare_posix_exit_code "test number -le" "test 3 -le 3"
+
+section "9. POSIX CONDITIONALS"
+
+compare_posix_output "if true" "if true; then echo yes; fi"
+compare_posix_output "if false else" "if false; then echo no; else echo yes; fi"
+compare_posix_output "if-elif-else" "X=2; if [ \$X -eq 1 ]; then echo one; elif [ \$X -eq 2 ]; then echo two; else echo other; fi"
+
+section "10. POSIX LOOPS"
+
+compare_posix_output "for loop" "for i in a b c; do echo \$i; done"
+compare_posix_output "while loop" "i=3; while [ \$i -gt 0 ]; do echo \$i; i=\$((i - 1)); done"
+compare_posix_output "until loop" "i=1; until [ \$i -gt 3 ]; do echo \$i; i=\$((i + 1)); done"
+
+section "11. POSIX CASE STATEMENT"
+
+compare_posix_output "case exact match" "x=2; case \$x in 1) echo one;; 2) echo two;; esac"
+compare_posix_output "case pattern match" "x=hello; case \$x in h*) echo h_prefix;; esac"
+compare_posix_output "case default" "x=z; case \$x in a) echo a;; b) echo b;; *) echo default;; esac"
+compare_posix_output "case multiple patterns" "x=b; case \$x in a|b|c) echo abc;; *) echo other;; esac"
+
+section "12. POSIX FUNCTIONS"
+
+compare_posix_output "simple function" "func() { echo hello; }; func"
+compare_posix_output "function with args" "func() { echo \$1 \$2; }; func foo bar"
+compare_posix_output "function return" "func() { return 42; }; func; echo \$?"
+compare_posix_output "function \$# args" "func() { echo \$#; }; func a b c"
+
+section "13. POSIX SPECIAL VARIABLES"
+
+compare_posix_output "\$? exit status" "true; echo \$?"
+compare_posix_output "\$? after false" "false; echo \$?"
+compare_posix_output "\$# argument count" "set -- a b c; echo \$#"
+compare_posix_output "\$@ all arguments" "set -- a b c; echo \$@"
+compare_posix_output "\$* all arguments" "set -- a b c; echo \$*"
+compare_posix_output "\$0 script name" "echo \$0 | grep -c sh"
+
+section "14. POSIX LOGICAL OPERATORS"
+
+compare_posix_exit_code "true && true" "true && true"
+compare_posix_exit_code "true && false" "true && false"
+compare_posix_exit_code "false || true" "false || true"
+compare_posix_exit_code "false || false" "false || false"
+compare_posix_output "command && echo" "true && echo success"
+compare_posix_output "command || echo" "false || echo fallback"
+compare_posix_output "! negation" "! false && echo negated"
+
+section "15. POSIX QUOTING"
+
+compare_posix_output "single quote literal" "echo '\$VAR'"
+compare_posix_output "double quote expand" 'VAR=test; echo "$VAR"'
+compare_posix_output "escape in double" 'echo "test\$var"'
+compare_posix_output "backslash escape" 'echo test\ word'
+
+section "16. POSIX SUBSHELLS"
+
+compare_posix_output "subshell grouping" "(echo a; echo b) | wc -l"
+compare_posix_output "subshell var isolation" "(VAR=inner; echo \$VAR); echo \$VAR"
+
+section "17. POSIX COMPOUND COMMANDS"
+
+compare_posix_output "command grouping {}" "{ echo a; echo b; } | wc -l"
+compare_posix_output "command list ;" "echo a; echo b"
+
+section "18. POSIX HERE DOCUMENTS"
+
+compare_posix_output "simple heredoc" "cat <<EOF
+line1
+line2
+EOF"
+
+compare_posix_output "heredoc with vars" "VAR=test; cat <<EOF
+value=\$VAR
+EOF"
+
+compare_posix_output "quoted heredoc" "cat <<'EOF'
+\$VAR
+EOF"
+
+section "19. POSIX WORD EXPANSION ORDER"
+
+# POSIX specifies: tilde, parameter, command subst, arithmetic, field splitting, pathname, quote removal
+compare_posix_output "expansion order" "VAR='a b'; echo \$VAR"
+compare_posix_output "quoted expansion" 'VAR="a b"; echo "$VAR"'
+
+section "20. POSIX PATHNAME EXPANSION (GLOBBING)"
+
+# Setup test files
+mkdir -p /tmp/posix_test_glob
+touch /tmp/posix_test_glob/a.txt /tmp/posix_test_glob/b.txt /tmp/posix_test_glob/c.dat
+
+compare_posix_output "glob * pattern" "ls /tmp/posix_test_glob/*.txt 2>/dev/null | wc -l"
+compare_posix_output "glob ? pattern" "ls /tmp/posix_test_glob/?.txt 2>/dev/null | wc -l"
+compare_posix_output "glob [abc] pattern" "ls /tmp/posix_test_glob/[ab].txt 2>/dev/null | wc -l"
+
+section "21. POSIX FIELD SPLITTING (IFS)"
+
+compare_posix_output "default IFS" "VAR='a b c'; set -- \$VAR; echo \$#"
+compare_posix_output "custom IFS" "IFS=:; VAR='a:b:c'; set -- \$VAR; echo \$1"
+
+section "22. POSIX EXIT STATUS"
+
+compare_posix_exit_code "true exit status" "true"
+compare_posix_exit_code "false exit status" "false"
+compare_posix_exit_code "command not found" "nonexistent_command_xyz 2>/dev/null"
+compare_posix_exit_code "return from function" "func() { return 3; }; func"
+
+section "23. POSIX SET BUILTIN"
+
+compare_posix_output "set positional" "set -- a b c; echo \$1 \$2 \$3"
+compare_posix_output "set shift" "set -- a b c; shift; echo \$1"
+compare_posix_output "set shift n" "set -- a b c d; shift 2; echo \$1"
+
+section "24. POSIX EXPORT"
+
+compare_posix_output "export variable" "export VAR=test; sh -c 'echo \$VAR'"
+
+section "25. POSIX READONLY"
+
+compare_posix_exit_code "readonly assignment" "readonly VAR=test; VAR=new 2>/dev/null"
+
+section "26. POSIX UNSET"
+
+compare_posix_output "unset variable" "VAR=test; unset VAR; echo \${VAR:-empty}"
+compare_posix_output "unset nonexistent" "unset NONEXISTENT_VAR; echo ok"
+compare_posix_exit_code "unset readonly fails" "readonly X=1; unset X 2>/dev/null"
+compare_posix_output "unset function" "f() { echo hi; }; unset -f f; f 2>/dev/null || echo gone"
+
+section "27. POSIX EVAL"
+
+compare_posix_output "eval simple" "eval 'echo hello'"
+compare_posix_output "eval variable" "CMD='echo test'; eval \$CMD"
+compare_posix_output "eval assignment" "eval 'X=5'; echo \$X"
+compare_posix_output "eval command subst" "eval 'echo \$(echo nested)'"
+compare_posix_output "eval with semicolon" "eval 'echo a; echo b'"
+
+section "28. POSIX EXEC"
+
+compare_posix_output "exec replaces shell" "exec echo done"
+compare_posix_exit_code "exec nonexistent" "exec /nonexistent/command 2>/dev/null"
+
+section "29. POSIX COLON BUILTIN"
+
+compare_posix_output "colon no-op" ": ; echo ok"
+compare_posix_exit_code "colon exit status" ":"
+compare_posix_output "colon with args" ": arg1 arg2; echo ok"
+compare_posix_output "colon in if" "if :; then echo yes; fi"
+
+section "30. POSIX DOT/SOURCE"
+
+# Create temp script
+echo 'SOURCED_VAR=from_source' > /tmp/posix_test_source.sh
+compare_posix_output "dot source script" ". /tmp/posix_test_source.sh; echo \$SOURCED_VAR"
+compare_posix_exit_code "dot nonexistent" ". /nonexistent_file 2>/dev/null"
+
+section "31. POSIX CD AND PWD"
+
+compare_posix_output "cd and pwd" "cd /tmp && pwd"
+compare_posix_output "cd - returns to OLDPWD" "cd /tmp; cd /; cd -"
+compare_posix_exit_code "cd nonexistent" "cd /nonexistent_dir 2>/dev/null"
+compare_posix_output "pwd builtin" "pwd | grep -c /"
+
+section "32. POSIX UMASK"
+
+compare_posix_output "umask display" "umask | grep -E '^[0-9]{3,4}\$'"
+compare_posix_output "umask set and restore" "OLD=\$(umask); umask 077; umask \$OLD"
+
+section "33. POSIX WAIT"
+
+compare_posix_output "wait for background" "sleep 0.1 & wait; echo done"
+compare_posix_exit_code "wait no jobs" "wait"
+
+section "34. POSIX TIMES"
+
+# times is optional but common
+compare_posix_output "times output exists" "times 2>/dev/null | head -1 || echo skipped"
+
+section "35. POSIX BREAK AND CONTINUE"
+
+compare_posix_output "break in for" "for i in 1 2 3 4 5; do [ \$i -eq 3 ] && break; echo \$i; done"
+compare_posix_output "continue in for" "for i in 1 2 3 4 5; do [ \$i -eq 3 ] && continue; echo \$i; done"
+compare_posix_output "break in while" "i=0; while [ \$i -lt 10 ]; do i=\$((i+1)); [ \$i -eq 3 ] && break; echo \$i; done"
+compare_posix_output "break 2 nested" "for i in a b; do for j in 1 2 3; do [ \$j -eq 2 ] && break 2; echo \$i\$j; done; done"
+compare_posix_output "continue 2 nested" "for i in a b; do for j in 1 2 3; do [ \$j -eq 2 ] && continue 2; echo \$i\$j; done; done"
+
+section "36. POSIX SIGNAL HANDLING"
+
+compare_posix_output "trap list" "trap 2>/dev/null; echo ok"
+compare_posix_output "trap on exit" "trap 'echo exiting' EXIT; exit 0"
+compare_posix_exit_code "trap reset" "trap - INT"
+
+section "37. POSIX BACKGROUND AND JOBS"
+
+compare_posix_output "background job" "sleep 0.1 & echo started; wait"
+compare_posix_output "\$! last background pid" "sleep 0.1 & echo \$! | grep -E '^[0-9]+\$'"
+
+section "38. POSIX ALIAS"
+
+compare_posix_output "alias definition" "alias ll='ls -l'; alias | grep ll"
+compare_posix_output "unalias" "alias x='echo test'; unalias x; alias | grep -c 'x=' || echo 0"
+
+section "39. POSIX COMMAND SEARCH"
+
+compare_posix_output "type builtin" "type echo | grep -c builtin"
+compare_posix_output "command -v" "command -v echo | grep -c echo"
+compare_posix_exit_code "command not found" "command -v nonexistent_xyz 2>/dev/null"
+
+section "40. POSIX COMPLEX EXPANSIONS"
+
+compare_posix_output "nested parameter expansion" 'A=hello; B=A; eval "echo \$$B"'
+compare_posix_output "expansion in assignment" 'X=$(echo test); echo $X'
+compare_posix_output "arithmetic in expansion" 'echo $((2 + 3 * 4))'
+compare_posix_output "multiple substitutions" 'A=1; B=2; echo $(echo $A) $(echo $B)'
+
+section "41. POSIX ADDITIONAL TESTS"
+
+compare_posix_output "expr modulo" "expr 10 % 3"
+compare_posix_output "double bracket" "X=5; [ \$X -gt 3 ] && [ \$X -lt 10 ] && echo range"
+compare_posix_output "if negation" "if ! false; then echo yes; fi"
+compare_posix_output "while true break" "i=0; while true; do i=\$((i+1)); [ \$i -ge 3 ] && break; done; echo \$i"
+compare_posix_output "case pipe pattern" "x=a; case \$x in a|b|c) echo match;; esac"
+
+section "42. POSIX STRING TESTS"
+
+compare_posix_output "string length" 'X=hello; echo ${#X}'
+compare_posix_output "string default" 'echo ${UNDEFINED:-default}'
+compare_posix_output "string assign" 'unset X; : ${X:=assigned}; echo $X'
+compare_posix_output "string error" 'X=val; echo ${X:+alternate}'
+compare_posix_output "prefix removal" 'X=hello.world; echo ${X#*.}'
+
+section "43. POSIX NUMERIC TESTS"
+
+compare_posix_output "arith add" 'echo $((5 + 3))'
+compare_posix_output "arith sub" 'echo $((10 - 4))'
+compare_posix_output "arith mul" 'echo $((6 * 7))'
+compare_posix_output "arith div" 'echo $((20 / 4))'
+compare_posix_output "arith mod" 'echo $((17 % 5))'
+compare_posix_output "arith neg" 'echo $((-5))'
+compare_posix_output "arith paren" 'echo $(((2 + 3) * 4))'
+
+section "44. POSIX FILE TESTS"
+
+compare_posix_exit_code "test file exists" "test -e /etc/passwd"
+compare_posix_exit_code "test file regular" "test -f /etc/passwd"
+compare_posix_exit_code "test dir" "test -d /tmp"
+compare_posix_exit_code "test readable" "test -r /etc/passwd"
+compare_posix_exit_code "test not exists" "test -e /nonexistent_xyz"
+
+section "45. POSIX LOOP TESTS"
+
+compare_posix_output "for numbers" "for i in 1 2 3; do echo \$i; done"
+compare_posix_output "while count" "i=0; while [ \$i -lt 3 ]; do i=\$((i+1)); done; echo \$i"
+compare_posix_output "until count" "i=0; until [ \$i -ge 3 ]; do i=\$((i+1)); done; echo \$i"
+compare_posix_output "for break" "for i in 1 2 3 4 5; do [ \$i -eq 3 ] && break; echo \$i; done"
+compare_posix_output "for continue" "for i in 1 2 3; do [ \$i -eq 2 ] && continue; echo \$i; done"
+
+section "46. POSIX FUNCTION TESTS"
+
+compare_posix_output "func basic" "f() { echo test; }; f"
+compare_posix_output "func args" "f() { echo \$1 \$2; }; f a b"
+compare_posix_output "func return" "f() { return 5; }; f; echo \$?"
+compare_posix_output "func local sim" "f() { (X=local; echo \$X); }; X=global; f; echo \$X"
+
+section "47. POSIX REDIRECT TESTS"
+
+compare_posix_output "redirect out" "echo test > /tmp/redir_out_\$\$; cat /tmp/redir_out_\$\$; rm /tmp/redir_out_\$\$"
+compare_posix_output "redirect append" "echo a > /tmp/redir_app_\$\$; echo b >> /tmp/redir_app_\$\$; wc -l < /tmp/redir_app_\$\$; rm /tmp/redir_app_\$\$"
+compare_posix_output "redirect in" "echo test > /tmp/redir_in_\$\$; cat < /tmp/redir_in_\$\$; rm /tmp/redir_in_\$\$"
+compare_posix_output "redirect stderr" "ls /nonexistent 2>/dev/null; echo done"
+
+section "48. POSIX PIPE TESTS"
+
+compare_posix_output "pipe simple" "echo test | cat"
+compare_posix_output "pipe chain" "echo test | cat | cat | cat"
+compare_posix_output "pipe filter" "printf 'a\nb\nc\n' | grep b"
+compare_posix_output "pipe count" "printf 'a\nb\nc\n' | wc -l"
+
+section "49. POSIX SUBSHELL TESTS"
+
+compare_posix_output "subshell basic" "(echo test)"
+compare_posix_output "subshell var" "X=outer; (X=inner; echo \$X); echo \$X"
+compare_posix_output "subshell exit" "(exit 42); echo \$?"
+compare_posix_output "subshell pipe" "(echo a; echo b) | wc -l"
+
+section "50. POSIX BRACE TESTS"
+
+compare_posix_output "brace basic" "{ echo test; }"
+compare_posix_output "brace multi" "{ echo a; echo b; echo c; }"
+compare_posix_output "brace var" "X=1; { X=2; }; echo \$X"
+compare_posix_output "brace pipe" "{ echo a; echo b; } | wc -l"
+
+# Summary
+printf "\n"
+printf "==========================================\n"
+printf "POSIX COMPLIANCE TEST RESULTS ${TEST_PREFIX}\n"
+printf "==========================================\n"
+printf "${GREEN}Passed:${NC}  %d\n" "$PASSED"
+printf "${RED}Failed:${NC}  %d\n" "$FAILED"
+printf "${YELLOW}Skipped:${NC} %d\n" "$SKIPPED"
+printf "Total:   %d\n" "$((PASSED + FAILED + SKIPPED))"
+printf "==========================================\n"
+
+if [ $((PASSED + FAILED)) -gt 0 ]; then
+    PASS_RATE=$((PASSED * 100 / (PASSED + FAILED)))
+    printf "Pass rate: %d%%\n" "$PASS_RATE"
+fi
+
+if [ "$FAILED" -gt 0 ]; then
+    printf "\n${RED}Failed tests:${NC}\n"
+    printf "%b" "$FAILED_TESTS_LIST"
+    printf "==========================================\n"
+fi
+
+if [ "$FAILED" -eq 0 ]; then
+    printf "${GREEN}ALL POSIX COMPLIANCE TESTS PASSED!${NC} ✓\n"
+    exit 0
+else
+    printf "${RED}SOME TESTS FAILED${NC} ✗\n"
+    exit 1
+fi

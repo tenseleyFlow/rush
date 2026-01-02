@@ -59,6 +59,8 @@ pub struct SimpleCommand {
 pub struct Pipeline {
     /// Commands connected by pipes
     pub commands: Vec<PipelineElement>,
+    /// Whether the pipeline is negated with !
+    pub negated: bool,
 }
 
 /// An element in a pipeline - can be a simple command, subshell, or extended test
@@ -315,13 +317,18 @@ pub enum VarExpansion {
 
 impl Pipeline {
     pub fn new(commands: Vec<PipelineElement>) -> Self {
-        Self { commands }
+        Self { commands, negated: false }
+    }
+
+    pub fn new_negated(commands: Vec<PipelineElement>, negated: bool) -> Self {
+        Self { commands, negated }
     }
 
     /// Helper to create a pipeline from simple commands
     pub fn from_simple_commands(commands: Vec<SimpleCommand>) -> Self {
         Self {
             commands: commands.into_iter().map(PipelineElement::Simple).collect(),
+            negated: false,
         }
     }
 

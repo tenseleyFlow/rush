@@ -50,19 +50,32 @@ pub fn execute_pipeline(
         return Err(PipelineError::EmptyPipeline);
     }
 
+    // Helper to negate exit status if pipeline is negated
+    let negate_if_needed = |result: ExecutionResult, negated: bool| -> ExecutionResult {
+        if negated {
+            let exit_code = result.exit_code();
+            crate::command::exit_code_to_result(if exit_code == 0 { 1 } else { 0 })
+        } else {
+            result
+        }
+    };
+
     // Special case: single command (not really a pipeline)
     if pipeline.commands.len() == 1 {
         match &pipeline.commands[0] {
             rush_parser::ast::PipelineElement::Simple(cmd) => {
-                return execute_simple_with_redirects(cmd, context, false)
-                    .map_err(PipelineError::from);
+                let result = execute_simple_with_redirects(cmd, context, false)
+                    .map_err(PipelineError::from)?;
+                return Ok(negate_if_needed(result, pipeline.negated));
             }
             rush_parser::ast::PipelineElement::Subshell(subshell) => {
-                return crate::execute_subshell(subshell, context)
-                    .map_err(|e| PipelineError::ExecutionError(ExecutionError::CommandNotFound(e)));
+                let result = crate::execute_subshell(subshell, context)
+                    .map_err(|e| PipelineError::ExecutionError(ExecutionError::CommandNotFound(e)))?;
+                return Ok(negate_if_needed(result, pipeline.negated));
             }
             rush_parser::ast::PipelineElement::ExtendedTest(cond) => {
-                return crate::control_flow::execute_extended_test(cond, context);
+                let result = crate::control_flow::execute_extended_test(cond, context)?;
+                return Ok(negate_if_needed(result, pipeline.negated));
             }
         }
     }
@@ -252,12 +265,13 @@ pub fn execute_pipeline(
         }
     }
 
-    // Return the exit status of the last command
-    Ok(ExecutionResult {
+    // Return the exit status of the last command (with negation if needed)
+    let result = ExecutionResult {
         exit_status: last_exit_status.unwrap(),
         #[cfg(unix)]
         job_control: None,
-    })
+    };
+    Ok(negate_if_needed(result, pipeline.negated))
 }
 
 /// Execute an AndOrList (commands connected by && or ||)

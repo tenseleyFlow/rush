@@ -433,7 +433,7 @@ fn builtin_trap(args: &[String], context: &mut rush_expand::Context) -> Executio
     }
 }
 
-/// set builtin - Set or display shell options
+/// set builtin - Set or display shell options and positional parameters
 fn builtin_set(args: &[String], context: &mut rush_expand::Context) -> ExecutionResult {
     // No arguments: display all variables
     if args.is_empty() {
@@ -446,8 +446,20 @@ fn builtin_set(args: &[String], context: &mut rush_expand::Context) -> Execution
     }
 
     // Process options
-    for arg in args {
-        if arg.starts_with('-') || arg.starts_with('+') {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+
+        if arg == "--" {
+            // End of options marker - remaining args become positional parameters
+            context.positional_params = args[i + 1..].to_vec();
+            return success_result();
+        } else if arg == "-" {
+            // Single dash: unset positional parameters and turn off -x and -v
+            context.positional_params.clear();
+            context.options.xtrace = false;
+            return success_result();
+        } else if arg.starts_with('-') || arg.starts_with('+') {
             let enable = arg.starts_with('-');
             let opts = &arg[1..];
 
@@ -469,14 +481,12 @@ fn builtin_set(args: &[String], context: &mut rush_expand::Context) -> Execution
                     }
                 }
             }
-        } else if arg == "--" {
-            // End of options marker
-            break;
         } else {
-            // Positional parameters (not implemented yet)
-            eprintln!("set: positional parameters not yet supported");
-            return error_result();
+            // Non-option argument: all remaining args become positional parameters
+            context.positional_params = args[i..].to_vec();
+            return success_result();
         }
+        i += 1;
     }
 
     success_result()

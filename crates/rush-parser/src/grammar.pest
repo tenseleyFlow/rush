@@ -37,7 +37,9 @@ and_or_list = { pipeline ~ (ws* ~ and_or_op ~ ws* ~ pipeline)* }
 and_or_op = { "&&" | "||" }
 
 // Pipeline: commands or subshells connected by pipes
-pipeline = { pipeline_element ~ (ws* ~ "|" ~ ws* ~ pipeline_element)* }
+// Can be optionally negated with ! prefix
+pipeline = { pipeline_negation? ~ pipeline_element ~ (ws* ~ "|" ~ ws* ~ pipeline_element)* }
+pipeline_negation = { "!" ~ ws+ }
 
 // An element in a pipeline can be a simple command, subshell, or extended test
 pipeline_element = { extended_test | subshell | simple_command }

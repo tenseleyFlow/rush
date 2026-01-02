@@ -149,9 +149,13 @@ fn parse_and_or_list_type(pair: pest::iterators::Pair<Rule>) -> Result<CommandTy
 
 fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Pipeline, ParseError> {
     let mut elements = Vec::new();
+    let mut negated = false;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
+            Rule::pipeline_negation => {
+                negated = true;
+            }
             Rule::pipeline_element => {
                 elements.push(parse_pipeline_element(inner_pair)?);
             }
@@ -159,7 +163,7 @@ fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> Result<Pipeline, ParseEr
         }
     }
 
-    Ok(Pipeline::new(elements))
+    Ok(Pipeline::new_negated(elements, negated))
 }
 
 fn parse_pipeline_element(pair: pest::iterators::Pair<Rule>) -> Result<PipelineElement, ParseError> {
