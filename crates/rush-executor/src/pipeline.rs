@@ -404,7 +404,16 @@ pub fn execute_simple_with_redirects(
     }
 
     // Check if it's a built-in command
-    if let Some(result) = crate::command::execute_builtin(&actual_command, &actual_args, context) {
+    if let Some(result) = {
+        // Apply redirects to current process for builtins
+        let _saved_fds = crate::redirect::apply_redirects_to_process(&cmd.redirects, context)
+            .map_err(|e| PipelineError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            )))?;
+        crate::command::execute_builtin(&actual_command, &actual_args, context)
+        // _saved_fds is dropped here, restoring the original file descriptors
+    } {
         return Ok(result);
     }
 

@@ -255,3 +255,183 @@ fn apply_single_redirect(
         }
     }
 }
+
+/// Saved file descriptors for restoring after builtin execution
+#[cfg(unix)]
+pub struct SavedFds {
+    saved_stdout: Option<i32>,
+    saved_stderr: Option<i32>,
+}
+
+#[cfg(unix)]
+impl SavedFds {
+    fn new() -> Self {
+        Self {
+            saved_stdout: None,
+            saved_stderr: None,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SavedFds {
+    fn drop(&mut self) {
+        use nix::libc;
+        // Restore stdout if saved
+        if let Some(saved) = self.saved_stdout {
+            unsafe {
+                libc::dup2(saved, libc::STDOUT_FILENO);
+                libc::close(saved);
+            }
+        }
+        // Restore stderr if saved
+        if let Some(saved) = self.saved_stderr {
+            unsafe {
+                libc::dup2(saved, libc::STDERR_FILENO);
+                libc::close(saved);
+            }
+        }
+    }
+}
+
+/// Apply redirections to the current process (for builtins)
+/// Returns a guard that restores the original file descriptors when dropped
+#[cfg(unix)]
+pub fn apply_redirects_to_process(
+    redirects: &[Redirect],
+    context: &mut Context,
+) -> Result<SavedFds, RedirectError> {
+    use nix::libc;
+    use std::os::unix::io::IntoRawFd;
+
+    let mut saved = SavedFds::new();
+
+    for redirect in redirects {
+        match redirect {
+            Redirect::Output { fd, file } => {
+                let filename = rush_expand::expand_word(file, context)
+                    .map_err(|e| RedirectError::ExpansionError(e.to_string()))?;
+
+                let file_handle = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&filename)?;
+
+                let file_fd = file_handle.into_raw_fd();
+
+                match fd {
+                    None | Some(1) => {
+                        // Save stdout if not already saved
+                        if saved.saved_stdout.is_none() {
+                            saved.saved_stdout = Some(unsafe { libc::dup(libc::STDOUT_FILENO) });
+                        }
+                        unsafe { libc::dup2(file_fd, libc::STDOUT_FILENO); }
+                        unsafe { libc::close(file_fd); }
+                    }
+                    Some(2) => {
+                        // Save stderr if not already saved
+                        if saved.saved_stderr.is_none() {
+                            saved.saved_stderr = Some(unsafe { libc::dup(libc::STDERR_FILENO) });
+                        }
+                        unsafe { libc::dup2(file_fd, libc::STDERR_FILENO); }
+                        unsafe { libc::close(file_fd); }
+                    }
+                    Some(fd_num) => {
+                        unsafe { libc::close(file_fd); }
+                        return Err(RedirectError::InvalidFileDescriptor(*fd_num));
+                    }
+                }
+            }
+            Redirect::OutputAppend { fd, file } => {
+                let filename = rush_expand::expand_word(file, context)
+                    .map_err(|e| RedirectError::ExpansionError(e.to_string()))?;
+
+                let file_handle = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .append(true)
+                    .open(&filename)?;
+
+                let file_fd = file_handle.into_raw_fd();
+
+                match fd {
+                    None | Some(1) => {
+                        if saved.saved_stdout.is_none() {
+                            saved.saved_stdout = Some(unsafe { libc::dup(libc::STDOUT_FILENO) });
+                        }
+                        unsafe { libc::dup2(file_fd, libc::STDOUT_FILENO); }
+                        unsafe { libc::close(file_fd); }
+                    }
+                    Some(2) => {
+                        if saved.saved_stderr.is_none() {
+                            saved.saved_stderr = Some(unsafe { libc::dup(libc::STDERR_FILENO) });
+                        }
+                        unsafe { libc::dup2(file_fd, libc::STDERR_FILENO); }
+                        unsafe { libc::close(file_fd); }
+                    }
+                    Some(fd_num) => {
+                        unsafe { libc::close(file_fd); }
+                        return Err(RedirectError::InvalidFileDescriptor(*fd_num));
+                    }
+                }
+            }
+            Redirect::StderrToStdout => {
+                // 2>&1 - redirect stderr to stdout
+                if saved.saved_stderr.is_none() {
+                    saved.saved_stderr = Some(unsafe { libc::dup(libc::STDERR_FILENO) });
+                }
+                unsafe { libc::dup2(libc::STDOUT_FILENO, libc::STDERR_FILENO); }
+            }
+            Redirect::AllOutput { file, append } => {
+                let filename = rush_expand::expand_word(file, context)
+                    .map_err(|e| RedirectError::ExpansionError(e.to_string()))?;
+
+                let file_handle = if *append {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .append(true)
+                        .open(&filename)?
+                } else {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&filename)?
+                };
+
+                let file_fd = file_handle.into_raw_fd();
+
+                if saved.saved_stdout.is_none() {
+                    saved.saved_stdout = Some(unsafe { libc::dup(libc::STDOUT_FILENO) });
+                }
+                if saved.saved_stderr.is_none() {
+                    saved.saved_stderr = Some(unsafe { libc::dup(libc::STDERR_FILENO) });
+                }
+                unsafe {
+                    libc::dup2(file_fd, libc::STDOUT_FILENO);
+                    libc::dup2(file_fd, libc::STDERR_FILENO);
+                    libc::close(file_fd);
+                }
+            }
+            // Input redirects, heredocs, etc. are not commonly used with builtins
+            // They're handled specially or not applicable
+            _ => {}
+        }
+    }
+
+    Ok(saved)
+}
+
+/// Stub for non-Unix platforms
+#[cfg(not(unix))]
+pub struct SavedFds;
+
+#[cfg(not(unix))]
+pub fn apply_redirects_to_process(
+    _redirects: &[Redirect],
+    _context: &mut Context,
+) -> Result<SavedFds, RedirectError> {
+    Ok(SavedFds)
+}
